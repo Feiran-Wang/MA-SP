@@ -1,0 +1,67 @@
+[![INFORMS Journal on Computing Logo](https://INFORMSJoC.github.io/logos/INFORMS_Journal_on_Computing_Header.jpg)](https://pubsonline.informs.org/journal/ijoc)
+
+# HGA-SP
+
+HGA-SP is a hybrid genetic algorithm with a set-partitioning matheuristic for
+the capacitated location-routing problem (CLRP).
+
+This archive is distributed in association with the [INFORMS Journal on
+Computing](https://pubsonline.informs.org/journal/ijoc) under the [MIT License](LICENSE).
+
+HGA-SP is based on the software and data used in the research reported in the
+paper _A Hybrid Genetic Algorithm with Multi-population for Capacitated Location
+Routing_ by P.F. He, J.K. Hao, and Q.H. Wu.
+
+## Cite
+
+To cite the contents of this repository, please cite both the paper and this repo, using their respective DOIs.
+
+https://doi.org/10.1287/ijoc.2023.0416
+
+https://doi.org/10.1287/ijoc.2023.0416.cd
+
+
+Below is the BibTex for citing this snapshot of the repository.
+
+```
+@misc{Hybrid2025,
+  author =        {Pengfei He, Jin-Kao Hao and Qinghua Wu},
+  publisher =     {INFORMS Journal on Computing},
+  title =         {A Hybrid Genetic Algorithm with Multi-population for Capacitated Location Routing},
+  year =          {2025},
+  doi =           {10.1287/ijoc.2023.0416.cd},
+  url =           {https://github.com/INFORMSJoC/2023.0416},
+  note =          {Available for download at https://github.com/INFORMSJoC/2023.0416},
+} 
+```
+
+## Running the programs
+
+To generate the HGA-SP executable (`ilrp`) for the CLRP, run `make` under the
+`code` folder on a Linux system.
+
+ ### The CLRP
+_Usage:_ 
+
+./code/ilrp instance depot_config outputFile bestValue isOptimal timeLimit numOfRuns randomSeed
+
+- 'instance' is the input benchamrk instance
+- 'depot_config' denotes the input depot configuration associated with the input instance, and this parameter can be removed
+- 'outputFile' is the name of output file 
+- 'bestValue' is the best result found from literature.
+- 'isOptimal' is used to indicate whether the bestValue is the optimal result.
+- 'timeLimit' is the time limit of each run
+- 'numOfRuns' is the maximum runs of each run
+- 'randomSeed' is the random seed 
+
+_Note see script for details.
+
+## Materials
+This repository includes the following materials:
+
+--Benchmark instances used in our paper (See the file named instances). One notices that the file also includes a set of depot configurations which are used for HGA-SP. Of course, you can also adjust the code in commandline.h to overlook it. 
+--Source codes of HGA-SP (See the source codes directory for the details.)   
+--Detailed computational results and parameter analysis (See the detailed results directory for the details.)   
+--Best solutions found in the experiments (See the certificate file for the details.)  
+Note: The contents and formats of the files are demonstrated in the ReadMe file of corresponding subdirectory.  
+  

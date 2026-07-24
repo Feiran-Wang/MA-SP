@@ -1,0 +1,72 @@
+# Local agent and editor state
+.agents/
+.codex/
+.git-hga-sp/
+.idea/
+.vscode/
+.DS_Store
+
+# C/C++ build artifacts
+*.o
+*.obj
+*.a
+*.so
+*.so.*
+*.dylib
+*.dll
+*.exe
+code/ilrp
+code/CLRP_Solver
+code/merged_code*.txt
+
+# Runtime output and experiment artifacts
+results/
+solutions/
+logs/
+*.log
+results_summary.csv
+failed_instances.log
+
+# Python environments and caches
+.venv/
+venv/
+env/
+ENV/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Secrets, private keys, and local environment files
+.env
+.env.*
+!.env.example
+*.lic
+gurobi.lic
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa*
+id_ed25519*
+
+# Local databases
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+
+# Papers, office documents, and generated archives
+*.pdf
+*.doc
+*.docx
+*.ppt
+*.pptx
+*.xls
+*.xlsx
+*.tex
+*.zip
+*.tar
+*.tar.gz
+*.tgz
