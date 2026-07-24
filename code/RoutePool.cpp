@@ -31,7 +31,7 @@ void RoutePool::extractRoutes(Individual* indiv) {
                     sr.locId = i; // 记录场站索引
                     sr.totalLoad = indiv->location[i].depots[j].route->load;
                     
-                    // 计算路径纯行驶距离 (根据论文，可能不包含固定成本)
+                    // 计算路径纯行驶距离（目标函数在此不包含固定成本）
                     // 复用原框架逻辑：起点的 next，直到 isDepot == true
                     sr.routeCost = 0.0;
                     Node* current = indiv->location[i].depots[j].next;

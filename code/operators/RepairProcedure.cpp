@@ -1,6 +1,6 @@
 /******************************************************************************
  * File: RepairProcedure.cpp
- * Author: Wang
+ * Author: Feiran Wang
  * Date: 2026-06-24
  * Description: 
  *   Operator for repairing infeasible solutions and handling constraints.

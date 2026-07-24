@@ -1,8 +1,7 @@
 /*
  * LS.h
  *
- *  Created on: 18 Apr 2020
- *      Author: Peng
+ * Author: Feiran Wang
  */
 
 #ifndef LS_H_

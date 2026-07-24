@@ -1,6 +1,6 @@
 /******************************************************************************
  * File: read_data.h
- * Author: Wang
+ * Author: Feiran Wang
  * Date: 2026-06-24
  * Description: 
  *   Handles data reading, parameter configuration, and instance parsing.
@@ -31,7 +31,7 @@ public:
 	//parameters used in the shaw operator
 	int nearest_pop_parameter=3;
 	double determine_para=6;    // determinism parameter p_d suggested by Ropke and Pisinger (2006) TS
-	/*parameters needed to be calibrated used in this paper*/
+	/*parameters used to calibrate the algorithm*/
 	/********************************************************************************************************/
 	/********************************************************************************************************/
 	int alpha=20;//20

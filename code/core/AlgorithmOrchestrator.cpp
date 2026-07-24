@@ -1,6 +1,6 @@
 /******************************************************************************
  * File: AlgorithmOrchestrator.cpp
- * Author: Wang
+ * Author: Feiran Wang
  * Date: 2026-06-24
  * Description: 
  *   High-level controller managing the algorithm lifecycle and orchestrating modules.

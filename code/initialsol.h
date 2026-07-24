@@ -1,8 +1,7 @@
 /*
  * initialsol.h
  *
- *  Created on: 17 Apr 2020
- *      Author: Peng
+ * Author: Feiran Wang
  */
 
 #ifndef INITIALSOL_H_

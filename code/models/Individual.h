@@ -1,6 +1,6 @@
 /******************************************************************************
  * File: Individual.h
- * Author: Wang
+ * Author: Feiran Wang
  * Date: 2026-06-24
  * Description: 
  *   Data structure representing a single solution (individual) in the population.

@@ -1,6 +1,6 @@
 /******************************************************************************
  * File: SPSolver.cpp
- * Author: Wang
+ * Author: Feiran Wang
  * Date: 2026-06-25
  * Description: 
  *   Set Partitioning (SP) solver using Gurobi for exact optimization and bounds.

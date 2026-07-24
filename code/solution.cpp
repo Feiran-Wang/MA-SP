@@ -1,8 +1,7 @@
 /*
  * solution.cpp
  *
- *  Created on: 17 Apr 2020
- *      Author: Peng
+ * Author: Feiran Wang
  */
 #include "basic.h"
 #include "solution.h"

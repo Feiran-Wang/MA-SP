@@ -1,8 +1,7 @@
 /*
  * crossover.h
  *
- *  Created on: 7 Dec 2020
- *      Author: Peng
+ * Author: Feiran Wang
  */
 
 #ifndef CROSSOVER_H_

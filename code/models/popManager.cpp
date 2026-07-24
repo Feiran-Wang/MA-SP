@@ -1,6 +1,6 @@
 /******************************************************************************
  * File: popManager.cpp
- * Author: Wang
+ * Author: Feiran Wang
  * Date: 2026-06-24
  * Description: 
  *   Manages the population of individuals, sub-populations, and diversity logic.

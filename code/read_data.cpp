@@ -1,8 +1,7 @@
 /*
  * readdata.cpp
  *
- *  Created on: 17 Apr 2020
- *      Author: Peng
+ * Author: Feiran Wang
  */
 
 #include "read_data.h"
@@ -911,7 +910,7 @@ void read_data::tabuSearchFindCompactConfiguration(){
 	LocConfigure.push_back({100,depot});
 	std::sort(LocConfigure.begin(), LocConfigure.end());
 */
-/*  this code repeates the evaluated function of Schneider's paper
+/*  this code repeats the evaluation logic described by Schneider et al.
 	std::set<int>depot;
 	depot.insert(200);
 	depot.insert(203);depot.insert(204);depot.insert(205);depot.insert(206);depot.insert(210);

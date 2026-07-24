@@ -1,6 +1,6 @@
 /******************************************************************************
  * File: mutation.h
- * Author: Wang
+ * Author: Feiran Wang
  * Date: 2026-06-24
  * Description: 
  *   Mutation operators for genetic algorithm diversification.

@@ -1,8 +1,7 @@
 /*
  * initialsol.cpp
  *
- *  Created on: 17 Apr 2020
- *      Author: Pengfei He
+ * Author: Feiran Wang
  */
 #include "basic.h"
 #include "initialsol.h"

@@ -1,6 +1,6 @@
 /******************************************************************************
  * File: main.cpp
- * Author: Wang
+ * Author: Feiran Wang
  * Date: 2026-06-24
  * Description: 
  *   Entry point of the program. Initializes the orchestrator and starts the algorithm.
