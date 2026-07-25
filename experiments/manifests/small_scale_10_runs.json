@@ -1,0 +1,97 @@
+{
+  "schema_version": 2,
+  "name": "small_scale_10_runs",
+  "binary": "build/release-gurobi/hgasp",
+  "output_root": "artifacts/experiments",
+  "instances": [
+    {
+      "id": "100-5-1c",
+      "path": "instances/set_S/100-5-1c.json",
+      "depot_config": "instances/depot configurations/S/depot_configuratons_100-5-1c.txt",
+      "best_known": 134516,
+      "is_optimal": false
+    },
+    {
+      "id": "100-5-2d",
+      "path": "instances/set_S/100-5-2d.json",
+      "depot_config": "instances/depot configurations/S/depot_configuratons_100-5-2d.txt",
+      "best_known": 242105,
+      "is_optimal": false
+    },
+    {
+      "id": "100-5-3e",
+      "path": "instances/set_S/100-5-3e.json",
+      "depot_config": "instances/depot configurations/S/depot_configuratons_100-5-3e.txt",
+      "best_known": 252603,
+      "is_optimal": false
+    },
+    {
+      "id": "100-5-4a",
+      "path": "instances/set_S/100-5-4a.json",
+      "depot_config": "instances/depot configurations/S/depot_configuratons_100-5-4a.txt",
+      "best_known": 255853,
+      "is_optimal": false
+    },
+    {
+      "id": "100-10-1c",
+      "path": "instances/set_S/100-10-1c.json",
+      "depot_config": "instances/depot configurations/S/depot_configuratons_100-10-1c.txt",
+      "best_known": 92629,
+      "is_optimal": false
+    },
+    {
+      "id": "100-10-2d",
+      "path": "instances/set_S/100-10-2d.json",
+      "depot_config": "instances/depot configurations/S/depot_configuratons_100-10-2d.txt",
+      "best_known": 343252,
+      "is_optimal": false
+    },
+    {
+      "id": "100-10-3e",
+      "path": "instances/set_S/100-10-3e.json",
+      "depot_config": "instances/depot configurations/S/depot_configuratons_100-10-3e.txt",
+      "best_known": 318109,
+      "is_optimal": false
+    },
+    {
+      "id": "100-10-4a",
+      "path": "instances/set_S/100-10-4a.json",
+      "depot_config": "instances/depot configurations/S/depot_configuratons_100-10-4a.txt",
+      "best_known": 253471,
+      "is_optimal": false
+    }
+  ],
+  "seeds": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9
+  ],
+  "limits": {
+    "time_seconds": 60,
+    "iterations": 5000,
+    "process_timeout_seconds": 120
+  },
+  "resources": {
+    "workers": 8,
+    "gurobi_threads": 1
+  },
+  "sp": {
+    "trigger_frequency": 1000,
+    "time_limit_seconds": 5,
+    "mip_gap": 0.001,
+    "seed": 0,
+    "max_pool_size": 25000,
+    "output_flag": 0,
+    "mip_focus": 1,
+    "heuristics": 0.15,
+    "representation_route_limit": true
+  },
+  "environment": {}
+}

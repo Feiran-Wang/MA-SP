@@ -7,6 +7,7 @@
  ******************************************************************************/
 
 #include"crossover.h"
+#include <stdexcept>
 
 crossover::crossover(read_data * data,  popManager * popman) {
 	this->data=data;
@@ -64,7 +65,6 @@ crossover::crossover(read_data * data,  popManager * popman) {
 	auxA2 = new bool [numV];
 }
 crossover::~crossover() {
-	// TODO Auto-generated destructor stub
 	for (int i=0;i<numC;i++){
 		delete [] AcapB[i].edgeF;
 		delete [] AcapB[i].edgeM;
@@ -522,7 +522,10 @@ void crossover::generationIntermediateSolutions(){
 					p1 = ABcycles[*k].sque[j].cour;
 					p2 = ABcycles[*k].sque[j+1].cour;
 					//check the ABcycles
-					if (p1 == p2 ){std::cout<<"the ABcycles is wrong with that an edge starts and ends at the same city"<<std::endl;exit(0);}
+					if (p1 == p2) {
+                        throw std::runtime_error(
+                            "invalid AB-cycle: self-loop in father edge");
+                    }
 
 					Node *pp1 = NULL, *pp2 = NULL;
 					if (p1 >= numV){// p1 is the location
@@ -563,7 +566,10 @@ void crossover::generationIntermediateSolutions(){
 				if ( ! ABcycles[*k].sque[j].isFather){// all edges from the mother solution
 					p1=ABcycles[*k].sque[j].cour;
 					p2=ABcycles[*k].sque[j+1].cour;
-					if (p1==p2 ){std::cout<<"the ABcycles is wrong with that an edge starts and ends at the same city"<<std::endl;exit(0);}
+					if (p1 == p2) {
+                        throw std::runtime_error(
+                            "invalid AB-cycle: self-loop in mother edge");
+                    }
 
 					if (p1 >= numV){
 						if (off->client[p2].pre == NULL)

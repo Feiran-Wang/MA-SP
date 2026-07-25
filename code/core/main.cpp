@@ -9,24 +9,55 @@
 #include "basic.h"
 #include "commandline.h"
 #include "AlgorithmOrchestrator.h"
+#include "RunLogger.h"
+#include <cstdlib>
+#include <exception>
+#include <iostream>
 #include <memory>
+#include <random>
+#include <string>
 
 std::mt19937 global_rng;
 
 int main(int argc, char*argv[]){
-	CommandLine comLin(argc,argv);
-	global_rng.seed(comLin.seed);
-	
-	// Use unique_ptr for data
-	std::unique_ptr<read_data> data(new read_data());
-	data->read_fun(comLin.pathInstance, comLin.pathDepotCon, comLin.pathSolution, comLin.bestDis, comLin.isOptimal, comLin.timeLimit,comLin.iterLimit);
-	data->startTime=clock();
-	
-	/***********************/
-	// The AlgorithmOrchestrator takes complete ownership of instantiating components
-	AlgorithmOrchestrator orchestrator(data.get());
-	orchestrator.run();
-	/*************************************************/
+    if (argc == 2 &&
+        (std::string(argv[1]) == "--help" ||
+         std::string(argv[1]) == "-h")) {
+        CommandLine::printUsage(std::cout, argv[0]);
+        return EXIT_SUCCESS;
+    }
 
-	return 0;
+    std::unique_ptr<hgasp::RunLogger> runLogger;
+    try {
+        CommandLine commandLine(argc, argv);
+        runLogger = std::make_unique<hgasp::RunLogger>(
+            commandLine.pathInstance,
+            commandLine.seed);
+        commandLine.displayInfo(std::cout);
+        global_rng.seed(commandLine.seed);
+
+        std::unique_ptr<read_data> data(new read_data());
+        data->applyEnvironmentOverrides();
+        if (data->spLogFile.empty()) {
+            data->spLogFile =
+                (runLogger->directory() / "gurobi.log").string();
+        }
+        data->read_fun(
+            commandLine.pathInstance,
+            commandLine.pathDepotCon,
+            commandLine.pathSolution,
+            commandLine.bestDis,
+            commandLine.isOptimal,
+            commandLine.timeLimit,
+            commandLine.iterLimit);
+        data->startTime = clock();
+
+        AlgorithmOrchestrator orchestrator(data.get());
+        orchestrator.run();
+        return EXIT_SUCCESS;
+    } catch (const std::exception& error) {
+        std::cerr << "HGA-SP error: " << error.what() << "\n\n";
+        CommandLine::printUsage(std::cerr, argv[0]);
+        return EXIT_FAILURE;
+    }
 }

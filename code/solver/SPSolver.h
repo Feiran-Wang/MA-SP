@@ -1,32 +1,31 @@
-/******************************************************************************
- * File: SPSolver.h
- * Author: Feiran Wang
- * Date: 2026-06-25
- * Description: 
- *   Set Partitioning (SP) solver using Gurobi for exact optimization and bounds.
- ******************************************************************************/
-
-// SPSolver.h
 #ifndef SPSOLVER_H_
 #define SPSOLVER_H_
 
+#include <memory>
 #include <vector>
-#include "gurobi_c++.h"
-#include "RoutePool.h"
-#include "read_data.h"
+
+#include "Route.h"
+#include "SpTypes.h"
 
 class SPSolver {
 public:
-    SPSolver(read_data* data);
+    explicit SPSolver(SpConfig config);
     ~SPSolver();
 
-    // 核心接口：接收路径池，返回最优路径组合
-    // 如果求解失败或无可行解，返回空的 vector
-    std::vector<StandaloneRoute> solve(const RoutePool* pool);
+    SPSolver(const SPSolver&) = delete;
+    SPSolver& operator=(const SPSolver&) = delete;
+    SPSolver(SPSolver&&) noexcept;
+    SPSolver& operator=(SPSolver&&) noexcept;
+
+    SpResult solve(
+        const SpProblem& problem,
+        const std::vector<StandaloneRoute>& routes);
+
+    const SpConfig& config() const noexcept;
 
 private:
-    read_data* data;
-    GRBEnv* env; // Gurobi 全局环境指针
+    class Impl;
+    std::unique_ptr<Impl> impl_;
 };
 
-#endif /* SPSOLVER_H_ */
+#endif  // SPSOLVER_H_

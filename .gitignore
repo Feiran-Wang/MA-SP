@@ -7,6 +7,7 @@
 .DS_Store
 
 # C/C++ build artifacts
+build/
 *.o
 *.obj
 *.a
@@ -20,9 +21,12 @@ code/CLRP_Solver
 code/merged_code*.txt
 
 # Runtime output and experiment artifacts
-results/
+artifacts/
+results/*
+!results/README.md
 solutions/
-logs/
+logs/*
+!logs/README.md
 *.log
 results_summary.csv
 failed_instances.log

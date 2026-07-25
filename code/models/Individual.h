@@ -14,7 +14,7 @@
 #include <set>
 #include "basic.h"
 #include "read_data.h"
-#include "RoutePool.h"
+#include "Route.h"
 struct Node;
 struct NodeDepot;
 struct Route{
@@ -63,6 +63,15 @@ public:
 	//methods
 	Individual();
 	virtual ~Individual();
+	Individual(const Individual&) = delete;
+	Individual& operator=(const Individual&) = delete;
+
+	// Number of route slots available in the fixed-slot linked-list
+	// representation. This is a representation bound, not a fleet limit.
+	static int representationRouteLimit(
+		const read_data& data,
+		int depotIndex);
+
 	void define(read_data *data);
 	void evaluationDis();
 	void getSaturationDegree();

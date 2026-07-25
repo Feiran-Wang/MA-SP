@@ -9,7 +9,6 @@
 #include "mutation.h"
 
 mutation::mutation(read_data * data) {
-	// TODO Auto-generated constructor stub
 	this->data = data;
 	this->numV = data->numV;
 	this->numC = data->numC;
@@ -19,7 +18,6 @@ mutation::mutation(read_data * data) {
 	cityRank = new int [numV];
 }
 mutation::~mutation() {
-	// TODO Auto-generated destructor stub
 	delete [] auxArray1;
 	delete [] cityRank;
 }
@@ -370,13 +368,11 @@ void mutation::distanceRemove(){
 }
 void mutation::mutationRun(Individual *s){
 	this->s=s;
-	std::uniform_int_distribution<int> dist_mut(1, 1);
-	if (dist_mut(global_rng) != 0) 
-    	shawRemoval();
-	else 
-    	locationRemove();//消融实验可选项，默认关闭
+    // Shaw removal is the HGAMP baseline operator. locationRemove remains an
+    // explicit ablation operator and must not be selected by a fake random
+    // distribution whose only possible value is one.
+    shawRemoval();
 
 	s->evaluationDis();
 	s->isRight();
 }
-

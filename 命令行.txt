@@ -1,4 +1,0 @@
-结果汇总        python3 summarize_results.py
-执行实验        . scripts/run_experiments.sh
-停止实验        pkill -9 -f ilrp
-代码合并（code路径下）      find . -name "*.cpp" -o -name "*.h" | while read f; do echo -e "\n\n/**************************************"; echo "** File: $f"; echo "**************************************/"; cat "$f"; done > merged_code.txt

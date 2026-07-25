@@ -10,6 +10,7 @@
 #define POPMANAGER_H_
 #include "read_data.h"
 #include "Individual.h"
+#include <memory>
 typedef std::vector <Individual*> SubPopulation ;
 typedef std::vector <std::vector<Individual*>> Population ;
 class popManager {
@@ -19,10 +20,8 @@ public:
 	void reduceHalfSubPop();
 	void removeEmptySubPop();
 
-	//
-	//
 	void copyAllData(Individual * s,Individual *ss);
-    // 【修改】增加 RoutePool 默认参数
+	// Optionally exports accepted routes to the shared route pool.
 	int addIndividual(Individual *indiv, int rankPop, bool isInitial, class RoutePool* pool = nullptr);
 	void addInElitePop(Individual *indiv);
 	void reStart();
@@ -38,15 +37,18 @@ public:
 	Individual *global;
 	Individual *bestIndivRestart;
 	std::vector <std::vector<Individual*>> popula;
-	int reverseReplacementCount; // 新增：游离种群替换计数器
+	int reverseReplacementCount; // Number of free-population takeovers.
 
-	// 评估所有常驻种群，返回当前平均适应度最差的子种群索引
+	// Returns the resident population with the worst mean objective.
     int getWorstResidentIndex();
     
-    // 接收从 Gurobi 重组的个体，执行情景A（开发强化）或情景B（范式转移）
-	int injectSPSolution(Individual* spIndiv, class RoutePool* pool = nullptr);
+    // Admits an SP solution to a matching resident population, or lets it
+    // replace the worst resident population when it introduces a new layout.
+	int injectSPSolution(
+		std::unique_ptr<Individual> spIndiv,
+		class RoutePool* pool = nullptr);
 
-	// 记录各常驻种群配置的确立代数，用于实施生存期禁忌策略
+	// Creation iteration used to protect newly established populations.
     std::vector<long long int> popCreationIteration;
 
 

@@ -11,7 +11,6 @@
 #include <cmath>
 
 popManager::popManager(read_data *data) {
-	// TODO Auto-generated constructor stub
 	this->data=data;
 	this->numV = data->numV;
 	this->numL = data->numL;
@@ -23,7 +22,6 @@ popManager::popManager(read_data *data) {
 }
 
 popManager::~popManager() {
-	// TODO Auto-generated destructor stub
 	for (int i = 0; i < (int)feasibleSubpopulation.size(); i++)
 		delete feasibleSubpopulation[i];
 	delete [] order;
@@ -198,50 +196,49 @@ int popManager::addIndividual(Individual *indiv, int rankPop, bool isInitial, Ro
 				copyAllData(myIndivi, myIndividual);
 
 				sub.emplace(sub.begin(),myIndivi);
-                // 【新增】：游离解因全局最优建立新根据地时，提取初代路径
+                // Export the seed routes of the newly established population.
                 if (pool != nullptr && myIndivi->isFeasible) {
                     pool->extractRoutes(myIndivi);
                 }
 				// generate the initial pop for the promising depot configuration
 				isObtainNewPop = true;
-				reverseReplacementCount++; // 成功触发逆袭机制，计数器+1
+				reverseReplacementCount++;
 
-				// 【新增】：为因全局最优解而诞生的新种群，赋予禁忌保护期时间戳
+				// Start the protection period for the new resident population.
 				popCreationIteration[index] = data->iteration;
 			}
 		}
 		////////////////////////////////////////////
 	}
-	// =========================================================
-	// [新增机制] 游离种群延迟孵化与锦标赛替换 (Delayed Incubation & Tournament)
-	// =========================================================
+	// A full free population may occupy an empty slot or challenge the
+	// weakest resident population.
 	if ((int)subpop.size() == data->popMax) {
 		
-		// 仅当目标为游离种群且非初始化阶段时触发判定
+		// Replacement applies only to the free population after initialization.
 		if (rankPop == data->numLocConfiguration && !isInitial) {
 			
-			// 1. 提取游离种群的最好解 (Best Free)
+			// Find the best free-population individual.
 			Individual* best_free = subpop[0];
 			for (Individual* ind : subpop) {
 				if (ind->fit < best_free->fit) best_free = ind;
 			}
 
-			// 2. 评估常驻种群以确定潜在被替代目标，并应用禁忌策略 (Evaluate incumbent populations with Tabu strategy)
+			// Prefer an empty slot; otherwise consider the worst unprotected
+			// resident population.
 			double max_avg_cost = -1.0;
 			int worst_res_idx = -1;
-			bool found_empty_slot = false; // 新增：空槽位标记标识
+			bool found_empty_slot = false;
 
 			for (int i = 0; i < data->numLocConfiguration; i++) {
-				// 【核心修正】：捕获空余槽位并赋予绝对优先接管权
 				if (popula[i].empty()) {
 					worst_res_idx = i;
 					found_empty_slot = true;
-					break; // 发现空槽位，直接中断扫描，锁定目标
+					break;
 				}
 				
-                // 执行禁忌期审查 (Tabu period verification)
+                // Do not replace a population during its protection period.
                 if ((data->iteration - popCreationIteration[i]) < data->popProtectionPeriod) {
-                    continue; // 拒绝评估处于保护期内的种群
+                    continue;
                 }
 
 				double current_avg = 0.0;
@@ -254,54 +251,50 @@ int popManager::addIndividual(Individual *indiv, int rankPop, bool isInitial, Ro
 				}
 			}
 
-			// 3 & 4. 执行替换授权判定与数据覆写 (Execute Replacement Authorization and Data Overwrite)
+			// An empty slot is accepted directly. Replacing a resident requires
+			// the free best to beat that resident's best individual.
 			if (worst_res_idx != -1) {
 				bool is_authorized_to_replace = false;
 				double target_fit_for_log = 0.0;
 
-				// 授权分支 A：发现空槽位，无条件授权免对决入驻
 				if (found_empty_slot) {
 					is_authorized_to_replace = true;
 				} 
-				// 授权分支 B：锁定劣势种群，需执行锦标赛对决 (Tournament Selection)
 				else {
 					Individual* best_worst_res = popula[worst_res_idx][0];
 					for (Individual* ind : popula[worst_res_idx]) {
 						if (ind->fit < best_worst_res->fit) best_worst_res = ind;
 					}
-					// 要求游离解具备严格优势方可覆写配置
 					if (best_free->fit < best_worst_res->fit) {
 						is_authorized_to_replace = true;
 						target_fit_for_log = best_worst_res->fit;
 					}
 				}
 
-				// 获得接管授权，执行物理覆写
 				if (is_authorized_to_replace) {
-					// 区分日志输出语义，保持严谨的终端监控反馈
 					if (found_empty_slot) {
-						std::cout << "\n>>> [Mechanism Monitor] 游离解发现系统空余槽位 (Empty Slot Detected)! (Free Best: " 
+						std::cout << "\n[Population] Free population occupies empty slot "
+						          << worst_res_idx << " (objective="
 						          << std::fixed << best_free->fit 
-						          << ")，直接进驻并激活槽位 [" << worst_res_idx << "]\n" << std::endl;
+						          << ")\n" << std::endl;
 					} else {
-						std::cout << "\n>>> [Mechanism Monitor] 游离解触发种群更迭 (Free Best: " << std::fixed << best_free->fit 
-						          << " < Incumbent Worst: " << target_fit_for_log 
-						          << ")，成功接管槽位 [" << worst_res_idx << "]\n" << std::endl;
+						std::cout << "\n[Population] Free population replaces slot "
+						          << worst_res_idx << " (candidate="
+						          << std::fixed << best_free->fit
+						          << ", resident_best=" << target_fit_for_log
+						          << ")\n" << std::endl;
 					}
 
-					// 【新增】：同步累加逆袭监控计数器，确保外层监控日志准确
 					reverseReplacementCount++;
 
-					// 重置该槽位的创立代数，启动新一轮禁忌保护 (Reset the epoch for Tabu protection)
+					// Start a new protection period.
 					popCreationIteration[worst_res_idx] = data->iteration;
 
 					SubPopulation& target_sub = popula[worst_res_idx];
 
-					// 若原槽位非空，释放内存以防泄漏 (Safe memory deallocation)
 					for (Individual* ind : target_sub) delete ind;
 					target_sub.clear();
 
-					// 覆写车场配置 (Depot Configuration)
 					data->compactLocConfigure[worst_res_idx].clear();
 					for (int j = 0; j < numL; j++) {
 						if (best_free->location[j].used) {
@@ -309,41 +302,36 @@ int popManager::addIndividual(Individual *indiv, int rankPop, bool isInitial, Ro
 						}
 					}
 
-					// 游离始祖登基，作为新种群的种子
+					// Seed the resident population with the free best.
 					Individual* seed_indiv = new Individual();
 					seed_indiv->define(data);
 					seed_indiv->initilization();
 					copyAllData(seed_indiv, best_free);
 					target_sub.emplace(target_sub.begin(), seed_indiv);
                     
-                    // 【新增】：锦标赛逆袭成功，提取始祖解路径
+                    // Export the seed routes.
                     if (pool != nullptr && seed_indiv->isFeasible) {
                         pool->extractRoutes(seed_indiv);
                     }
 
-					// 清空原游离种群，释放算力并等待下一轮探索
 					for (Individual* ind : subpop) delete ind;
 					subpop.clear();
 
-					// 返回替换的索引，通知外层 (solution.cpp -> main_loop) 继续调用快速孵化繁衍机制
+					// Return the slot so RouteGenerator can refill it.
 					return worst_res_idx; 
 				}
 			}
 		}
 
-		// 若未触发替换，或非游离种群，执行常规基于多样性的缩减
+		// Otherwise apply the normal diversity-based population reduction.
 		while ((int)subpop.size() > data->popMin)
 			removeWorstBiasedFitness(subpop);
 	}
-	// =========================================================
-
-	// 【修改】：全新的动态均值准入法则
-	// 无论当前解是进入哪个种群，只要它的成本低于路径池的历史平均水平，
-	// 它就有资格注入新基因，并进一步拉低均值门槛！
+	// Admit routes from feasible solutions that beat the historical mean.
 	if (pool != nullptr && indiv->isFeasible) {
 		if (indiv->fit < pool->getAverageFitness()) {
-			pool->extractRoutes(indiv);              // 拆解并提取路径
-			pool->recordSolutionFitness(indiv->fit); // 更新动态平均值
+			pool->extractRoutes(indiv);
+			pool->recordSolutionFitness(indiv->fit);
 		}
 	}
 
@@ -353,37 +341,7 @@ int popManager::addIndividual(Individual *indiv, int rankPop, bool isInitial, Ro
 		return -1;
 }
 
-void popManager::addInElitePop(Individual *indiv){
-/*	//update the e-lite population
-	SubPopulation & epop = eliteSubpopulation;
-	for (Individual * myIndividual : epop)// no clone individuals
-		if (myIndividual->fit + Min > indiv->fit && myIndividual->fit - Min < indiv->fit)
-			return;
-	if ((int)epop.size() < data->popMax){
-		Individual * myIndiv = new Individual();
-		myIndiv->define(data);
-		copyAllData(myIndiv, indiv);
-		int place = (int)epop.size();
-		while (place > 0 && epop[place - 1]->fit > indiv->fit - Min)
-			place--;
-		epop.emplace(epop.begin() + place, myIndiv);
-	}
-	else{
-		int place = (int)epop.size();
-		while (place > 0 && epop[place - 1]->fit > indiv->fit - Min)
-			place--;
-		if (place < (int)epop.size()){
-			Individual * myIndiv = new Individual();
-			myIndiv->define(data);
-			copyAllData(myIndiv, indiv);
-			epop.emplace(epop.begin() + place, myIndiv);
-			int worst = (int)epop.size()-1;
-			Individual * worstIndividual = epop[worst];
-			epop.erase(epop.begin() + worst); // Removing the individual from the population
-			delete worstIndividual;
-		}
-	}
-	*/
+void popManager::addInElitePop(Individual * /*indiv*/){
 }
 Individual * popManager::selectionParentSolution(Individual *exist, int rankPop){
 	SubPopulation & subpop = popula[rankPop];
@@ -589,19 +547,30 @@ int popManager::getWorstResidentIndex() {
     return worstIdx;
 }
 
-int popManager::injectSPSolution(Individual* spIndiv, RoutePool* pool) { // <--- 关键修正：这里必须是 int
-    if (!spIndiv->isFeasible) {
-        delete spIndiv; 
-        return -1; 
+int popManager::injectSPSolution(
+        std::unique_ptr<Individual> ownedSpIndiv,
+        RoutePool* pool) {
+    if (!ownedSpIndiv) {
+        return -1;
     }
-    
-    if (data->no_capacity_location || data->numLocConfiguration == 0) {
-        addIndividual(spIndiv, 0, false); 
-        delete spIndiv; 
+    Individual* spIndiv = ownedSpIndiv.get();
+    if (!spIndiv->isFeasible) {
         return -1; 
     }
 
-    // 1. 提取 Gurobi 产生解的场站配置集合与哈希特征
+    // Route-pool admission is independent from population admission. Even a
+    // population duplicate or a rejected depot configuration may contain new
+    // columns created by the post-SP local search.
+    if (pool != nullptr) {
+        pool->extractRoutes(spIndiv);
+    }
+    
+    if (data->no_capacity_location || data->numLocConfiguration == 0) {
+        addIndividual(spIndiv, 0, false, pool);
+        return -1; 
+    }
+
+    // Derive the depot configuration and its lookup keys.
     std::set<int> spDepots;
     long long int var1 = 0, var2 = 0;
     for (int i = 0; i < data->numL; i++) {
@@ -613,7 +582,7 @@ int popManager::injectSPSolution(Individual* spIndiv, RoutePool* pool) { // <---
         }
     }
 
-    // 2. 匹配现有的常驻种群配置
+    // Match an existing resident depot configuration.
     int matchIndex = -1;
     for (int i = 0; i < data->numLocConfiguration; ++i) {
         if (data->compactLocConfigure[i] == spDepots) {
@@ -622,30 +591,35 @@ int popManager::injectSPSolution(Individual* spIndiv, RoutePool* pool) { // <---
         }
     }
 
-    // 3. 同步更新全局最优解
-    if (spIndiv->fit < bestIndivRestart->fit) {
+    // Update restart and global incumbents.
+    if (spIndiv->fit + Min < bestIndivRestart->fit) {
         bestIndivRestart->initilization();
         copyAllData(bestIndivRestart, spIndiv);
+        data->nbIterNonImpro = 0;
+        data->meetBestTime =
+            static_cast<double>(clock()) /
+            static_cast<double>(CLOCKS_PER_SEC);
     }
-    if (spIndiv->fit < global->fit) {
+    if (spIndiv->fit + Min < global->fit) {
         global->initilization();
         copyAllData(global, spIndiv);
-        data->meetBestTime = float((double)clock()/(double)CLOCKS_PER_SEC);
+        data->meetBestTime =
+            static_cast<double>(clock()) /
+            static_cast<double>(CLOCKS_PER_SEC);
     }
 
-    // 4. 执行多分支注入逻辑
     if (matchIndex != -1) {
-        // 【新增】：显式判重操作 (Explicit Duplicate Check)
-        // 在进行昂贵的距离计算前，如果发现适应度完全相同的解，视为克隆体直接抛弃
+        // Reject equal-objective clones before computing diversity distances.
         for (Individual* existingIndiv : popula[matchIndex]) {
             if (existingIndiv->fit + Min > spIndiv->fit && existingIndiv->fit - Min < spIndiv->fit) {
-                std::cout << "[SP Reject] SP解与常驻种群 [" << matchIndex << "] 中的现有解重复，拦截注入。" << std::endl;
-                delete spIndiv; // 释放刚才为SP解分配的内存，防止内存泄漏
+                std::cout << "[SP Inject] rejected duplicate in resident "
+                          << matchIndex << std::endl;
                 return -1;
             }
         }
 
-        std::cout << "[SP Inject] 配置匹配 (Match found)! 注入常驻种群 [" << matchIndex << "] (Exploitation)" << std::endl;
+        std::cout << "[SP Inject] matched resident " << matchIndex
+                  << std::endl;
 
         for (Individual* existingIndiv : popula[matchIndex]) {
             double myDistance = spIndiv->brokenPairsDistance(existingIndiv);
@@ -653,27 +627,38 @@ int popManager::injectSPSolution(Individual* spIndiv, RoutePool* pool) { // <---
             spIndiv->indivsPerProximity.insert({ myDistance, existingIndiv });
         }
 
-        popula[matchIndex].push_back(spIndiv);
+        SubPopulation& matchedPopulation = popula[matchIndex];
+        int insertionIndex = static_cast<int>(matchedPopulation.size());
+        while (insertionIndex > 0 &&
+               matchedPopulation[insertionIndex - 1]->fit >
+                   spIndiv->fit - Min) {
+            --insertionIndex;
+        }
+        matchedPopulation.emplace(
+            matchedPopulation.begin() + insertionIndex,
+            ownedSpIndiv.release());
 
-		// 【新增】：SP生成的精英解贡献统计，进一步拉低门槛
+        // Route extraction already happened above; update the admission mean
+        // only after successful population insertion.
         if (pool != nullptr) {
             pool->recordSolutionFitness(spIndiv->fit);
         }
         
-        if ((int)popula[matchIndex].size() > data->popMin) {
-            updateBiasedFitnesses(popula[matchIndex]);
-            removeWorstBiasedFitness(popula[matchIndex]);
+        if ((int)matchedPopulation.size() > data->popMin) {
+            updateBiasedFitnesses(matchedPopulation);
+            removeWorstBiasedFitness(matchedPopulation);
         }
         return -1;
     } else {
-        // 计算常驻种群劣势指标，以评估 SP 解的全局接管资质 (Evaluate incumbent vulnerabilities)
+        // Prefer an empty slot; otherwise identify the resident with the
+        // highest mean objective.
         int worstIdx = -1;
         double worstAvgFit = -1.0;
         
         for (int i = 0; i < data->numLocConfiguration; ++i) {
             if (popula[i].empty()) {
                 worstIdx = i;
-                worstAvgFit = 1e30; // 识别到空余槽位，赋予极高优先级
+                worstAvgFit = 1e30;
                 break;
             }
             double sumFit = 0.0;
@@ -686,21 +671,23 @@ int popManager::injectSPSolution(Individual* spIndiv, RoutePool* pool) { // <---
             }
         }
 
-        // 【修改2：提升SP接管门槛】找出最差种群（平均成本最高）里的【最好解】
+        // Require the SP solution to beat the best individual in the target
+        // resident population.
         double bestFitInWorstPop = 1e30;
         if (worstIdx != -1 && !popula[worstIdx].empty()) {
             for (Individual* ind : popula[worstIdx]) {
                 if (ind->fit < bestFitInWorstPop) bestFitInWorstPop = ind->fit;
             }
         } else {
-            bestFitInWorstPop = 1e30; // 如果是空槽位，无条件放行
+            bestFitInWorstPop = 1e30;
         }
 
-        // 核心审查：SP解必须严格优于劣势种群里的【最好解】
         if (worstIdx != -1 && spIndiv->fit < bestFitInWorstPop) {
-            std::cout << "[SP Inject] 发生范式转移! SP解成本 (" << std::fixed << spIndiv->fit 
-                      << ") 击败劣势种群的最优解 (" << bestFitInWorstPop << "). 强势接管槽位 [" << worstIdx << "]" << std::endl;
-            // 确立接管时间戳，触发禁忌保护 (Establish timestamp for Tabu period)
+            std::cout << "[SP Inject] replaces resident " << worstIdx
+                      << " (candidate=" << std::fixed << spIndiv->fit
+                      << ", resident_best=" << bestFitInWorstPop << ")"
+                      << std::endl;
+            // Start the protection period for the replacement population.
             popCreationIteration[worstIdx] = data->iteration;
 
             long long int old_var1 = 0, old_var2 = 0;
@@ -722,18 +709,19 @@ int popManager::injectSPSolution(Individual* spIndiv, RoutePool* pool) { // <---
             data->dimTabu1[var1 % data->dimension] = worstIdx;
             data->dimTabu2[var2 % data->dimension] = worstIdx;
 
-            popula[worstIdx].push_back(spIndiv);
+            popula[worstIdx].push_back(ownedSpIndiv.release());
 
-			// 【新增】：SP生成的精英解贡献统计，进一步拉低门槛
+            // Keep post-local-search SP columns available for future SP calls.
             if (pool != nullptr) {
                 pool->recordSolutionFitness(spIndiv->fit);
             }
 
             return worstIdx;
         } else {
-            std::cout << "[SP Reject] 准入失败 (Admittance Rejected). SP解 (" << std::fixed << spIndiv->fit 
-                      << ") 未能超越劣势种群最优解门槛 (" << bestFitInWorstPop << "). 抛弃该配置." << std::endl;
-            delete spIndiv; // 销毁无竞争力个体，避免内存泄漏 (Prevent memory leakage)
+            std::cout << "[SP Inject] rejected (candidate=" << std::fixed
+                      << spIndiv->fit
+                      << ", required_below=" << bestFitInWorstPop << ")"
+                      << std::endl;
             return -1;
         }
     }

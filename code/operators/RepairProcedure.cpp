@@ -9,7 +9,6 @@
 #include "RepairProcedure.h"
 
 RepairProcedure::RepairProcedure(read_data *data, popManager * popman) {
-	// TODO Auto-generated constructor stub
 	this->data = data;
 	this->numV = data->numV;
 	this->numL = data->numL;
@@ -22,7 +21,6 @@ RepairProcedure::RepairProcedure(read_data *data, popManager * popman) {
 	this->popman = popman;
 }
 RepairProcedure::~RepairProcedure(){
-	// TODO Auto-generated destructor stub
 	for (int i=0;i<data->maxVnum;i++)
 		delete [] tabuTable[i];
 	delete [] tabuTable;

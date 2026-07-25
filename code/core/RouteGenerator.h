@@ -37,7 +37,9 @@ public:
     
     // 3. Integration & Incumbent
     void integrateToPopulation(int childIndex, RoutePool* pool);
-    void injectIncumbent(Individual* spIndiv, RoutePool* pool);
+    void injectIncumbent(
+        std::unique_ptr<Individual> spIndiv,
+        RoutePool* pool);
     
     // 4. System Status & Restarts
     void getAverageValue(int rank);

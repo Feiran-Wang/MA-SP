@@ -7,26 +7,95 @@
  ******************************************************************************/
 
 #include "Individual.h"
-#include "RoutePool.h"
+#include <cmath>
+#include <limits>
+#include <stdexcept>
+#include <string>
 
-Individual::Individual() {
-}
+Individual::Individual()
+	: client(nullptr),
+	  location(nullptr),
+	  route(nullptr),
+	  inventory(0),
+	  inventoryVeh(0),
+	  dis(0.0),
+	  capExcess(0),
+	  penalty(0.0),
+	  fit(Max),
+	  biasedFit(0.0),
+	  isFeasible(false),
+	  maxVnum(0),
+	  data(nullptr),
+	  numV(0),
+	  numL(0),
+	  numC(0),
+	  checkArray(nullptr) {}
+
 Individual::~Individual() {
 	delete [] client;
-	for (int i=0; i< numL;i++){
-		delete [] location[i].depots;
-		delete [] location[i].endDepots;
+	if (location != nullptr) {
+		for (int i=0; i< numL;i++){
+			delete [] location[i].depots;
+			delete [] location[i].endDepots;
+		}
 	}
 	delete [] location;
 	delete [] route;
 	delete [] checkArray;
 }
+
+int Individual::representationRouteLimit(
+		const read_data& data,
+		const int depotIndex) {
+	if (depotIndex < 0 || depotIndex >= data.numL) {
+		throw std::out_of_range(
+			"representation route limit: depot index is out of range");
+	}
+	if (data.vehCap <= 0) {
+		throw std::invalid_argument(
+			"representation route limit: vehicle capacity must be positive");
+	}
+
+	const int inventory = data.invLoc[data.numV + depotIndex];
+	if (inventory < 0 || data.totalDemand < 0) {
+		throw std::invalid_argument(
+			"representation route limit: capacities must be nonnegative");
+	}
+
+	const double globalBoundValue =
+		std::ceil(1.2 * static_cast<double>(data.totalDemand) /
+				  static_cast<double>(data.vehCap)) +
+		5.0;
+	const double depotBoundValue =
+		3.0 * std::ceil(static_cast<double>(inventory) /
+						static_cast<double>(data.vehCap));
+	if (globalBoundValue >
+			static_cast<double>(std::numeric_limits<int>::max()) ||
+		depotBoundValue >
+			static_cast<double>(std::numeric_limits<int>::max())) {
+		throw std::overflow_error(
+			"representation route limit exceeds the supported integer range");
+	}
+	return std::min(
+		static_cast<int>(globalBoundValue),
+		static_cast<int>(depotBoundValue));
+}
+
 void Individual::define(read_data *data){
+	if (data == nullptr) {
+		throw std::invalid_argument(
+			"cannot define an individual without problem data");
+	}
+	if (client != nullptr || location != nullptr ||
+		route != nullptr || checkArray != nullptr) {
+		throw std::logic_error(
+			"an individual cannot be defined more than once");
+	}
 	this->data=data;
 	this->numV=data->numV;
 	this->numL = data->numL;
 	this->numC = data->numC;
-	client=new Node [numV];
+	client=new Node [numV]{};
 	for (int i=0;i<numV;i++){
 		client[i].isDepot=false;
 		client[i].cour=i;
@@ -39,7 +108,7 @@ void Individual::define(read_data *data){
 		client[i].cumulatedDis=0;
 		client[i].whenLastTestedRI=-1;
 	}
-	location = new NodeDepot [numL];
+	location = new NodeDepot [numL]{};
 	maxVnum=0;
 	for (int i=0; i<numL; i++){
 		location[i].used = false;
@@ -47,16 +116,14 @@ void Individual::define(read_data *data){
 		location[i].inventory = data->invLoc[i+numV];
 		location[i].remainInven = 0;
 		location[i].splitTime = 0;
-		int numOfVeh;
-	//	if (data->totalDemand < location[i].inventory){
-			numOfVeh =ceil(1.2*data->totalDemand/data->vehCap)+5;
-	//	}
 		if (location[i].inventory > data->totalDemand) location[i].iscapCon = false;// to decide the constraint in locations
 		else location[i].iscapCon = true;
-		location[i].maxVisit = std::min((double)numOfVeh, 3*(double)ceil((double)location[i].inventory/(double)data->vehCap));
+		location[i].maxVisit = representationRouteLimit(*data, i);
 		maxVnum += location[i].maxVisit;
-		location[i].depots = new Node [location[i].maxVisit];
-		location[i].endDepots = new Node [location[i].maxVisit];
+		location[i].depots =
+			new Node [location[i].maxVisit]{};
+		location[i].endDepots =
+			new Node [location[i].maxVisit]{};
 		for (int j=0; j<location[i].maxVisit;j++){
 			location[i].depots[j].isDepot=true;
 			location[i].depots[j].cour = i+numV;
@@ -77,7 +144,7 @@ void Individual::define(read_data *data){
 		}
 	}
 //	data->maxVnum = maxVnum;
-	route=new Route [maxVnum];// the maxVnum is the maximum vehicles;
+	route=new Route [maxVnum]{};// the maxVnum is the maximum vehicles;
 	for (int i=0; i<maxVnum; i++){
 		route[i].used=false;
 		route[i].cour=i;
@@ -97,7 +164,7 @@ void Individual::define(read_data *data){
 			rankRoute++;
 		}
 	}
-	checkArray = new int [numV];
+	checkArray = new int [numV]{};
 }
 void Individual::initilization(){
 	saturatLoc.clear();
@@ -161,16 +228,10 @@ void Individual::evaluationDis(){
 			for (int j=0; j < location[i - numV].maxVisit; j++){
 				if (location[i-numV].depots[j].route->used){
 					p = &location[i - numV].depots[j];
-					totalDis += data->D[p->next->cour][p->cour];
-					p=p->next;
-					while(1){
-						p=p->next;
-						if (p->isDepot){
-							totalDis += data->D[p->pre->cour][p->cour];
-							break;
-						}
-						totalDis += data->D[p->cour][p->pre->cour];
-					}
+					do {
+						totalDis += data->D[p->cour][p->next->cour];
+						p = p->next;
+					} while (!p->isDepot);
 				}
 			}
 		}
@@ -179,7 +240,8 @@ void Individual::evaluationDis(){
 	fit = totalLoc + totalVeh + totalDis;
 	dis = totalDis;
 
-	data->probFixedCost = totalLoc / fit;
+	data->probFixedCost =
+		std::abs(fit) > Min ? totalLoc / fit : 0.0;
 }
 void Individual::getSaturationDegree(){
 	saturatLoc.clear();
@@ -203,18 +265,19 @@ void Individual::updateRouteInfor(int &r, int nbMoves){
 	mynode->cumulatedLoad=0;
 	mynode->position=0;
 	mynode->cumulatedDis = 0;
-		//
-	bool isFirst = true;
-	while(!mynode->isDepot || isFirst){
-		mynode=mynode->next;
-		mynode->position=mynode->pre->position+1;
-		mynode->cumulatedLoad=mynode->dem+mynode->pre->cumulatedLoad;
-		mynode->cumulatedDis=data->D[mynode->cour][mynode->pre->cour]+mynode->pre->cumulatedDis;
-		isFirst = false;
-	}
-	route[r].dis=mynode->cumulatedDis + data->D[mynode->cour][mynode->next->cour];
+	do {
+		Node* previous = mynode;
+		mynode = mynode->next;
+		mynode->position = previous->position + 1;
+		mynode->cumulatedLoad =
+			mynode->dem + previous->cumulatedLoad;
+		mynode->cumulatedDis =
+			data->D[previous->cour][mynode->cour] +
+			previous->cumulatedDis;
+	} while (!mynode->isDepot);
+	route[r].dis=mynode->cumulatedDis;
 	route[r].load=mynode->cumulatedLoad;
-	route[r].nbClients=mynode->position;
+	route[r].nbClients=std::max(0, mynode->position - 1);
 
 //		NodeDepot *loc = route[r].whichLocation;// update the location inventory
 //		loc->remainInven=0;
@@ -281,7 +344,7 @@ void Individual::isRight(){// check the solution
 				if (!location[loc - numV].depots[i].route->used)continue;
 				capVeh = 0;
 				p = &location[loc - numV].depots[i];
-				totalDis += data->D[p->next->cour][p->cour];
+				totalDis += data->D[p->cour][p->next->cour];
 				p=p->next;
 				while(! p->next->isDepot){
 					checkArray[p->cour] ++;
@@ -292,30 +355,30 @@ void Individual::isRight(){// check the solution
 				checkArray[p->cour] ++;
 				capVeh += data->demCus[p->cour];
 				if (capVeh != p->route->load || capVeh > data->vehCap){
-					std::cout<<"The route "<<p->route->cour<<" capacity is wrong"<<std::endl;
-					exit(0);
+                    throw std::runtime_error(
+                        "individual validation failed: route capacity");
 				}
 				capLoc += capVeh;
 				totalDis += data->D[p->cour][p->next->cour];
 			}
 			if (capLoc != p->route->whichLocation->remainInven || capLoc > location[loc-numV].inventory){
-				std::cout<<"The location "<<p->route->whichLocation->cour<<" capacity is wrong"<<std::endl;
-				exit(0);
+                throw std::runtime_error(
+                    "individual validation failed: depot capacity");
 			}
 		}
 	}
 	for (int i=0;i<numV;i++)
 		if (checkArray[i] != 1){
-			std::cout<<"The vertex "<<i<<"  is wrong"<<std::endl;
-			exit(0);
+            throw std::runtime_error(
+                "individual validation failed: customer coverage");
 		}
 	if (! data->equalTwoVar(totalDis, dis)){
-		std::cout<<"The traveling distance is wrong"<<std::endl;
-		exit(0);
+        throw std::runtime_error(
+            "individual validation failed: travel cost mismatch");
 	}
 	if (! data->equalTwoVar(totalFit+ totalDis, fit)){
-		std::cout<<"The fitness is wrong"<<std::endl;
-		exit(0);
+        throw std::runtime_error(
+            "individual validation failed: objective mismatch");
 	}
 }
 void Individual::decideFeasible(){
@@ -381,7 +444,7 @@ void Individual::outputBestSolution(){
 					if (!location[loc - numV].depots[i].route->used)continue;
 					capVeh = 0;
 					p = &location[loc - numV].depots[i];
-					totalDis += data->D[p->next->cour][p->cour];
+					totalDis += data->D[p->cour][p->next->cour];
 					p=p->next;
 					while(! p->next->isDepot){
 						checkArray[p->cour] ++;
@@ -392,8 +455,8 @@ void Individual::outputBestSolution(){
 					checkArray[p->cour] ++;
 					capVeh += data->demCus[p->cour];
 					if (capVeh != p->route->load || capVeh > data->vehCap){
-						std::cout<<"The route "<<p->route->cour<<" capacity is wrong"<<std::endl;
-						exit(0);
+                        throw std::runtime_error(
+                            "solution output failed: route capacity mismatch");
 					}
 					capLoc += capVeh;
 					totalDis += data->D[p->cour][p->next->cour];
@@ -444,6 +507,9 @@ void Individual::removeProximity(Individual * indiv){
 double Individual::averageBrokenPairsDistanceClosest(int nbClosest){
 	double result = 0 ;
 	int maxSize = std::min<int>(nbClosest, indivsPerProximity.size());
+	if (maxSize == 0) {
+		return 0.0;
+	}
 	auto it = indivsPerProximity.begin();
 	for (int i=0 ; i < maxSize; i++){
 		result += it->first ;
@@ -490,72 +556,124 @@ double Individual::brokenPairsDistance(Individual * indiv2){
 }
 
 void Individual::rebuildFromSP(const std::vector<StandaloneRoute>& spRoutes) {
-    // 1. 彻底清空当前个体的旧状态
-    // 调用原生的初始化函数，这会重置所有的 pre/next 指针、route 状态以及 capacity 记录。
-    this->initilization();
+    if (spRoutes.empty()) {
+        throw std::invalid_argument(
+            "SP reconstruction requires at least one route");
+    }
 
-    // 2. 遍历 Gurobi 传回的每一条独立路线
-    for (size_t r = 0; r < spRoutes.size(); ++r) {
-        const StandaloneRoute& sRoute = spRoutes[r];
-        int locId = sRoute.locId; // 获取场站索引 (0 到 data->numL - 1)
-
-        // 场站被启用
-        this->location[locId].used = true;
-
-        // 获取该场站当前可用的空闲槽位 (splitTime)
-        // 在原代码逻辑中，splitTime 表示该场站已经分派了多少条路线
-        int currentSplitTime = this->location[locId].splitTime;
-        
-        // 防呆保护：确保不超过场站的路线数量上限 (通常是车辆数上限)
-        if (currentSplitTime >= this->location[locId].maxVisit) {
-            std::cerr << "[Error] Depot " << locId << " exceeded maxVisit capacity!" << std::endl;
-            continue; 
+    // Validate the complete value-level solution before mutating any linked
+    // list. The solver also validates its incumbent, but this importer is an
+    // independent trust boundary.
+    std::vector<int> customerUse(numV, 0);
+    std::vector<int> depotRouteCount(numL, 0);
+    std::vector<int> depotLoad(numL, 0);
+    for (const StandaloneRoute& sRoute : spRoutes) {
+        if (sRoute.locId < 0 || sRoute.locId >= numL) {
+            throw std::out_of_range(
+                "SP reconstruction contains an invalid depot index");
+        }
+        if (sRoute.sequence.empty()) {
+            throw std::invalid_argument(
+                "SP reconstruction contains an empty route");
+        }
+        if (++depotRouteCount[sRoute.locId] >
+            location[sRoute.locId].maxVisit) {
+            throw std::invalid_argument(
+                "SP reconstruction exceeds the fixed-slot representation "
+                "route limit at depot " +
+                std::to_string(sRoute.locId));
         }
 
-        // 提取起始虚拟节点和终止虚拟节点
+        int computedLoad = 0;
+        double computedCost = 0.0;
+        int previous = numV + sRoute.locId;
+        for (const int customer : sRoute.sequence) {
+            if (customer < 0 || customer >= numV) {
+                throw std::out_of_range(
+                    "SP reconstruction contains an invalid customer index");
+            }
+            if (++customerUse[customer] != 1) {
+                throw std::invalid_argument(
+                    "SP reconstruction serves a customer more than once");
+            }
+            computedLoad += data->demCus[customer];
+            computedCost += data->D[previous][customer];
+            previous = customer;
+        }
+        computedCost +=
+            data->D[previous][numV + sRoute.locId];
+
+        if (computedLoad != sRoute.totalLoad) {
+            throw std::invalid_argument(
+                "SP reconstruction route load does not match the instance");
+        }
+        if (computedLoad > data->vehCap) {
+            throw std::invalid_argument(
+                "SP reconstruction route exceeds vehicle capacity");
+        }
+        if (!data->equalTwoVar(computedCost, sRoute.routeCost)) {
+            throw std::invalid_argument(
+                "SP reconstruction route cost does not match its sequence");
+        }
+        depotLoad[sRoute.locId] += computedLoad;
+        if (depotLoad[sRoute.locId] >
+            location[sRoute.locId].inventory) {
+            throw std::invalid_argument(
+                "SP reconstruction exceeds depot capacity");
+        }
+    }
+    for (const int useCount : customerUse) {
+        if (useCount != 1) {
+            throw std::invalid_argument(
+                "SP reconstruction does not cover every customer exactly once");
+        }
+    }
+
+    // Reset all links, routes and aggregate capacity state.
+    this->initilization();
+
+    for (const StandaloneRoute& sRoute : spRoutes) {
+        const int locId = sRoute.locId;
+
+        this->location[locId].used = true;
+
+        // splitTime points to the next available route slot at this depot.
+        const int currentSplitTime = this->location[locId].splitTime;
+        
         Node* startDepot = &this->location[locId].depots[currentSplitTime];
         Node* endDepot   = &this->location[locId].endDepots[currentSplitTime];
         Route* currentRoute = startDepot->route;
 
-        // 激活当前 Route
         currentRoute->used = true;
-        // 注意：原代码的 route 数组中可能需要标记这条 route 被占用
-        // 这里依赖底层逻辑，通常通过移除 emptyRoutes 中的记录来实现
         this->location[locId].emptyRoutes.erase(currentRoute->cour);
 
-        // 3. 编织双向链表拓扑
+        // Build the route's doubly linked customer chain.
         Node* previousNode = startDepot;
         
         for (int custId : sRoute.sequence) {
             Node* currentNode = &this->client[custId];
             
-            // 建立与前一个节点的双向连接
             previousNode->next = currentNode;
             currentNode->pre = previousNode;
-            
-            // 绑定所属的 Route
             currentNode->route = currentRoute;
-            
-            // 标记节点被访问 (防止评估时漏掉)
-            // 原代码可能没有显式的 isVisited 标记，而是靠链表遍历。
-            
             previousNode = currentNode;
         }
 
-        // 闭合路线：将最后一个客户连接回对应的 endDepot
         previousNode->next = endDepot;
         endDepot->pre = previousNode;
 
-        // 更新场站的已分配路线计数
         this->location[locId].splitTime++;
 
-        // 4. 更新该条独立路线的物理信息
-        // 调用原有的 updateRouteInfor，这会计算这条 route 上的负载(load) 和距离(cost)
-        // 传入参数通常是 (route 的索引, 一个增量/状态值，通常传 -1 表示全量刷新)
+        // Recompute route load and travel cost from the rebuilt chain.
         this->updateRouteInfor(currentRoute->cour, -1);
+        if (currentRoute->load != sRoute.totalLoad ||
+            !data->equalTwoVar(currentRoute->dis, sRoute.routeCost)) {
+            throw std::logic_error(
+                "SP reconstruction produced inconsistent route aggregates");
+        }
     }
 
-    // 5. 更新所有使用过的场站的宏观信息
+    // Recompute aggregate state for every active depot.
     for (int i = 0; i < data->numL; i++) {
         if (this->location[i].used) {
             int locIndex = i + data->numV;
@@ -563,18 +681,15 @@ void Individual::rebuildFromSP(const std::vector<StandaloneRoute>& spRoutes) {
         }
     }
 
-    // 6. 全局属性矫正与强制校验
-    // 执行整体的距离评估，这会计算整张图的总距离并存入 this->dis
+    // Recompute the objective and derive feasibility from the rebuilt
+    // structure. Do not declare a solver result feasible by assignment.
     this->evaluationDis();
 
-    // 强制消除可行性违规。因为 Gurobi 的解在数学上保证了容量可行，
-    // 我们必须将相关的惩罚清零，以防止原框架误杀优质解。
     this->capExcess = 0;
     this->penalty = 0.0;
-    this->isFeasible = true;
+    this->decideFeasible();
 
-    // (可选/防御性) 验证生成的解是否完全正确
-    this->isRight();
+    if (this->isFeasible) {
+        this->isRight();
+    }
 }
-
-

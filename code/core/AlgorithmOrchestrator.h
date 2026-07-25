@@ -27,6 +27,8 @@ private:
     std::unique_ptr<RouteGenerator> routeGenerator;
     std::unique_ptr<RoutePool> routePool;
     std::unique_ptr<SPSolver> spSolver;
+
+    SpProblem buildSpProblem() const;
 };
 
 #endif /* ALGORITHM_ORCHESTRATOR_H_ */

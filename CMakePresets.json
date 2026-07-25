@@ -1,0 +1,65 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 20,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "generator": "Unix Makefiles",
+      "cacheVariables": {
+        "CMAKE_EXPORT_COMPILE_COMMANDS": true,
+        "BUILD_TESTING": true
+      }
+    },
+    {
+      "name": "dev",
+      "displayName": "Development with Gurobi",
+      "inherits": "base",
+      "binaryDir": "${sourceDir}/build/dev",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "HGASP_BUILD_GUROBI_SMOKE_TEST": true
+      }
+    },
+    {
+      "name": "release-gurobi",
+      "displayName": "Release with Gurobi",
+      "inherits": "base",
+      "binaryDir": "${sourceDir}/build/release-gurobi",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "HGASP_BUILD_GUROBI_SMOKE_TEST": true
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "dev",
+      "configurePreset": "dev"
+    },
+    {
+      "name": "release-gurobi",
+      "configurePreset": "release-gurobi"
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "dev",
+      "configurePreset": "dev",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "release-gurobi",
+      "configurePreset": "release-gurobi",
+      "output": {
+        "outputOnFailure": true
+      }
+    }
+  ]
+}

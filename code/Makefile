@@ -1,25 +1,36 @@
-# 定义 Gurobi 路径 
-GUROBI_HOME = /opt/gurobi1301/linux64
-GUROBI_INC  = -I$(GUROBI_HOME)/include
-GUROBI_LIB  = -L$(GUROBI_HOME)/lib -lgurobi_c++ -lgurobi130 -lm
+# Compatibility wrapper for users accustomed to running `make` in code/.
+# CMake is the single source of build logic.
 
-# 编译器参数
-CXX = g++
-CXXFLAGS = -O3 -std=c++11 -Wall $(GUROBI_INC)
+CMAKE ?= cmake
+BUILD_TYPE ?= Release
+BUILD_DIR ?= $(abspath $(CURDIR)/../build/release-gurobi)
+SOURCE_DIR := $(abspath $(CURDIR)/..)
+CMAKE_ARGS ?=
 
-# 自动获取当前目录下所有的 .cpp 文件并转换为 .o 文件
-SRCS = $(wildcard *.cpp)
-OBJS = $(SRCS:.cpp=.o)
+ifneq ($(strip $(GUROBI_ROOT)),)
+CMAKE_ARGS += -DGUROBI_ROOT="$(GUROBI_ROOT)"
+endif
 
-# 将目标文件重新命名为 ilrp，与你习惯的运行命令保持一致
-TARGET = ilrp
+.PHONY: all configure hgasp test clean
 
-$(TARGET): $(OBJS)
-	$(CXX) $(CXXFLAGS) -o $(TARGET) $(OBJS) $(GUROBI_LIB)
+all: hgasp
 
-%.o: %.cpp
-	$(CXX) $(CXXFLAGS) -c $< -o $@
+configure:
+	$(CMAKE) -S "$(SOURCE_DIR)" -B "$(BUILD_DIR)" \
+		-DCMAKE_BUILD_TYPE="$(BUILD_TYPE)" \
+		$(CMAKE_ARGS)
 
-# 强化清理逻辑：一并删除可能遗留的旧版 ilrp 和 之前错误生成的 CLRP_Solver
+hgasp: configure
+	$(CMAKE) --build "$(BUILD_DIR)" --target hgasp --parallel
+	$(CMAKE) -E rm -f "$(CURDIR)/ilrp"
+	$(CMAKE) -E create_symlink "$(BUILD_DIR)/hgasp" "$(CURDIR)/ilrp"
+
+test: configure
+	$(CMAKE) --build "$(BUILD_DIR)" --parallel
+	ctest --test-dir "$(BUILD_DIR)" --output-on-failure
+
 clean:
-	rm -f *.o $(TARGET) CLRP_Solver
+	@if test -f "$(BUILD_DIR)/CMakeCache.txt"; then \
+		$(CMAKE) --build "$(BUILD_DIR)" --target clean; \
+	fi
+	$(CMAKE) -E rm -f "$(CURDIR)/ilrp"

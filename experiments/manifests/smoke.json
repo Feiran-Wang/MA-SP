@@ -1,0 +1,39 @@
+{
+  "schema_version": 2,
+  "name": "smoke",
+  "binary": "build/release-gurobi/hgasp",
+  "output_root": "artifacts/experiments",
+  "instances": [
+    {
+      "id": "100-5-1c",
+      "path": "instances/set_S/100-5-1c.json",
+      "depot_config": "instances/depot configurations/S/depot_configuratons_100-5-1c.txt",
+      "best_known": 134516,
+      "is_optimal": false
+    }
+  ],
+  "seeds": [
+    0
+  ],
+  "limits": {
+    "time_seconds": 60,
+    "iterations": 1000,
+    "process_timeout_seconds": 120
+  },
+  "resources": {
+    "workers": 1,
+    "gurobi_threads": 1
+  },
+  "sp": {
+    "trigger_frequency": 50001,
+    "time_limit_seconds": 360,
+    "mip_gap": 0.001,
+    "seed": 0,
+    "max_pool_size": 50000,
+    "output_flag": 0,
+    "mip_focus": 1,
+    "heuristics": 0.15,
+    "representation_route_limit": true
+  },
+  "environment": {}
+}

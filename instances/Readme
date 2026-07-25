@@ -1,3 +1,0 @@
-The benchmark instances are obtained from public sources. Download the necessary instances and extract them under the instances folder.
-For depot configurations, given an instance, we use the program in Arnold, F., & Sörensen, K. (2021). A progressive filtering heuristic for the location-routing problem and variants. Computers & Operations Research, 129, 105166. to generate a set of depot configurations.
-When we run the code, this parameter can be removed.

@@ -1,0 +1,138 @@
+{
+  "schema_version": 2,
+  "name": "all_100_5_full_10_runs",
+  "binary": "build/release-gurobi/hgasp",
+  "output_root": "artifacts/experiments",
+  "instances": [
+    {
+      "id": "100-5-1c",
+      "path": "instances/set_S/100-5-1c.json",
+      "depot_config": "instances/depot configurations/S/depot_configuratons_100-5-1c.txt",
+      "best_known": 134516,
+      "is_optimal": false
+    },
+    {
+      "id": "100-5-1d",
+      "path": "instances/set_S/100-5-1d.json",
+      "depot_config": "instances/depot configurations/S/depot_configuratons_100-5-1d.txt",
+      "best_known": 275749,
+      "is_optimal": false
+    },
+    {
+      "id": "100-5-1e",
+      "path": "instances/set_S/100-5-1e.json",
+      "depot_config": "instances/depot configurations/S/depot_configuratons_100-5-1e.txt",
+      "best_known": 292311,
+      "is_optimal": false
+    },
+    {
+      "id": "100-5-2c",
+      "path": "instances/set_S/100-5-2c.json",
+      "depot_config": "instances/depot configurations/S/depot_configuratons_100-5-2c.txt",
+      "best_known": 83855,
+      "is_optimal": false
+    },
+    {
+      "id": "100-5-2d",
+      "path": "instances/set_S/100-5-2d.json",
+      "depot_config": "instances/depot configurations/S/depot_configuratons_100-5-2d.txt",
+      "best_known": 242105,
+      "is_optimal": false
+    },
+    {
+      "id": "100-5-2e",
+      "path": "instances/set_S/100-5-2e.json",
+      "depot_config": "instances/depot configurations/S/depot_configuratons_100-5-2e.txt",
+      "best_known": 254025,
+      "is_optimal": false
+    },
+    {
+      "id": "100-5-3c",
+      "path": "instances/set_S/100-5-3c.json",
+      "depot_config": "instances/depot configurations/S/depot_configuratons_100-5-3c.txt",
+      "best_known": 87555,
+      "is_optimal": false
+    },
+    {
+      "id": "100-5-3d",
+      "path": "instances/set_S/100-5-3d.json",
+      "depot_config": "instances/depot configurations/S/depot_configuratons_100-5-3d.txt",
+      "best_known": 226752,
+      "is_optimal": false
+    },
+    {
+      "id": "100-5-3e",
+      "path": "instances/set_S/100-5-3e.json",
+      "depot_config": "instances/depot configurations/S/depot_configuratons_100-5-3e.txt",
+      "best_known": 252603,
+      "is_optimal": false
+    },
+    {
+      "id": "100-5-4a",
+      "path": "instances/set_S/100-5-4a.json",
+      "depot_config": "instances/depot configurations/S/depot_configuratons_100-5-4a.txt",
+      "best_known": 255853,
+      "is_optimal": false
+    },
+    {
+      "id": "100-5-4b",
+      "path": "instances/set_S/100-5-4b.json",
+      "depot_config": "instances/depot configurations/S/depot_configuratons_100-5-4b.txt",
+      "best_known": 214425,
+      "is_optimal": false
+    },
+    {
+      "id": "100-5-4c",
+      "path": "instances/set_S/100-5-4c.json",
+      "depot_config": "instances/depot configurations/S/depot_configuratons_100-5-4c.txt",
+      "best_known": 98104,
+      "is_optimal": false
+    },
+    {
+      "id": "100-5-4d",
+      "path": "instances/set_S/100-5-4d.json",
+      "depot_config": "instances/depot configurations/S/depot_configuratons_100-5-4d.txt",
+      "best_known": 250921,
+      "is_optimal": false
+    },
+    {
+      "id": "100-5-4e",
+      "path": "instances/set_S/100-5-4e.json",
+      "depot_config": "instances/depot configurations/S/depot_configuratons_100-5-4e.txt",
+      "best_known": 211113,
+      "is_optimal": false
+    }
+  ],
+  "seeds": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9
+  ],
+  "limits": {
+    "time_seconds": 0,
+    "iterations": 300000
+  },
+  "resources": {
+    "workers": 35,
+    "gurobi_threads": 1
+  },
+  "sp": {
+    "trigger_frequency": 50001,
+    "time_limit_seconds": 360,
+    "mip_gap": 0.001,
+    "seed": 0,
+    "max_pool_size": 50000,
+    "output_flag": 0,
+    "mip_focus": 1,
+    "heuristics": 0.15,
+    "representation_route_limit": true
+  },
+  "environment": {}
+}

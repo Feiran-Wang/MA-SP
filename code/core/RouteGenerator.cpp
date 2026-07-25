@@ -11,6 +11,7 @@
 #include <iostream>
 #include <iomanip>
 #include <algorithm>
+#include <limits>
 
 using namespace std;
 
@@ -52,7 +53,6 @@ RouteGenerator::RouteGenerator(read_data * data) {
 }
 
 RouteGenerator::~RouteGenerator(){
-    // unique_ptrs clean up automatically
 }
 
 void RouteGenerator::preprocessingLocationConfiguration(){
@@ -250,7 +250,7 @@ int RouteGenerator::generateEAXChildren(int subPop1, int subPop2) {
 bool RouteGenerator::refineChild(int childIndex) {
     repair->repairCapacityConstraint(&subPop[childIndex], data->penaltyDepot, data->penaltyVeh);
     if (subPop[childIndex].isFeasible){
-        if (RandomInt(0, 99) > data->mutationProb)
+        if (RandomInt(0, 99) < data->mutationProbabilityPercent)
             mutationOperator->mutationRun(&subPop[childIndex]);
         ls->local_search_run(&subPop[childIndex], data->penaltyDepot, data->penaltyVeh);
         return true;
@@ -310,8 +310,21 @@ void RouteGenerator::integrateToPopulation(int childIndex, RoutePool* pool) {
     }
 }
 
-void RouteGenerator::injectIncumbent(Individual* spIndiv, RoutePool* pool) {
-    int spNewPopIdx = popman->injectSPSolution(spIndiv, pool);
+void RouteGenerator::injectIncumbent(
+        std::unique_ptr<Individual> spIndiv,
+        RoutePool* pool) {
+    int spNewPopIdx =
+        popman->injectSPSolution(std::move(spIndiv), pool);
+
+    // SP insertion can change an existing resident population without
+    // creating a new configuration. Refresh every non-empty cached mean so
+    // subsequent subpopulation tournaments observe the injected solution.
+    for (int rank = 0; rank < data->numLocConfiguration + 1; ++rank) {
+        if (!popman->popula[rank].empty()) {
+            getAverageValue(rank);
+        }
+    }
+
     if (spNewPopIdx > -1) {
         std::cout << "[SP Incubation] Rapidly expanding population to popMin for new SP configuration [" << spNewPopIdx << "]..." << std::endl;
         
@@ -337,7 +350,10 @@ void RouteGenerator::injectIncumbent(Individual* spIndiv, RoutePool* pool) {
 void RouteGenerator::checkStagnationAndRestart(RoutePool* pool) {
     if (data->nbIterNonImpro > data->maxIterNonProd){
         double elapsedTime = (double)(clock() - data->startTime) / CLOCKS_PER_SEC;
-        double remainingTime = data->timeLimit - elapsedTime;
+        const double remainingTime =
+            data->timeLimit > 0
+                ? data->timeLimit - elapsedTime
+                : std::numeric_limits<double>::infinity();
         int remainingIters = data->iterLimit - data->iteration;
 
         if (remainingIters < 50000 || remainingTime < 600.0) {
@@ -359,7 +375,6 @@ void RouteGenerator::checkStagnationAndRestart(RoutePool* pool) {
                 }
             }
             getAverageValue(-1);
-            data->iteration = 0; // The original code didn't reset iteration on restart, but we must follow it. Wait, the original code had data->iteration++ in the loop, we shouldn't reset data->iteration here unless original did. Original did not reset it. So remove data->iteration = 0.
         }
     }
 }

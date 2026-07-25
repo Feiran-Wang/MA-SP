@@ -8,6 +8,7 @@
 
 #include "basic.h"
 #include "initialsol.h"
+#include <stdexcept>
 initial_sol::initial_sol(read_data * data, RepairProcedure *repair) {
 	this->repair = repair;
 	this->data=data;
@@ -396,7 +397,10 @@ void initial_sol::remedyTheSolution(std::vector<int> location){// to use the inf
 					tarLoc = location[i] - numV;
 				}
 			}
-			if (tarLoc == -1){std::cout<<"there is a wrong problem"<<std::endl;exit(0);}
+			if (tarLoc == -1) {
+                throw std::runtime_error(
+                    "initial solution repair found no eligible depot");
+            }
 			min_delta = Max;
 			for (int j=0; j<s->location[tarLoc].maxVisit;j++){
 				p = &s->location[tarLoc].depots[j];
@@ -443,4 +447,3 @@ void initial_sol::initial_solution(Individual *s, int rankPop){
 	s->evaluationDis();
 	s->isRight();
 }
-

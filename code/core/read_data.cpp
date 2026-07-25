@@ -9,14 +9,137 @@
 #include "read_data.h"
 #include "basic.h"
 #include "Individual.h"
-read_data::read_data() {
+#include <cerrno>
+#include <cmath>
+#include <cstdlib>
+#include <limits>
+#include <stdexcept>
 
+namespace {
+
+int environmentInt(
+    const char* name,
+    const int fallback,
+    const int minimum,
+    const int maximum) {
+    const char* raw = std::getenv(name);
+    if (raw == nullptr || *raw == '\0') {
+        return fallback;
+    }
+    errno = 0;
+    char* end = nullptr;
+    const long value = std::strtol(raw, &end, 10);
+    if (errno != 0 || end == raw || *end != '\0' ||
+        value < minimum || value > maximum) {
+        throw std::invalid_argument(
+            std::string(name) + " is outside its accepted integer range");
+    }
+    return static_cast<int>(value);
 }
+
+double environmentDouble(
+    const char* name,
+    const double fallback,
+    const double minimum,
+    const double maximum) {
+    const char* raw = std::getenv(name);
+    if (raw == nullptr || *raw == '\0') {
+        return fallback;
+    }
+    errno = 0;
+    char* end = nullptr;
+    const double value = std::strtod(raw, &end);
+    if (errno != 0 || end == raw || *end != '\0' ||
+        !std::isfinite(value) || value < minimum || value > maximum) {
+        throw std::invalid_argument(
+            std::string(name) + " is outside its accepted numeric range");
+    }
+    return value;
+}
+
+bool environmentBool(const char* name, const bool fallback) {
+    return environmentInt(name, fallback ? 1 : 0, 0, 1) == 1;
+}
+
+}  // namespace
+
+read_data::read_data() {
+    numV = 0;
+    numL = 0;
+    numC = 0;
+    D = nullptr;
+    x = nullptr;
+    y = nullptr;
+    demCus = nullptr;
+    invLoc = nullptr;
+    openCostLoc = nullptr;
+    conflictLoc = nullptr;
+    solutionTabu = nullptr;
+}
+
+void read_data::applyEnvironmentOverrides() {
+    spTriggerFrequency = environmentInt(
+        "HGASP_SP_TRIGGER_FREQUENCY",
+        spTriggerFrequency,
+        1,
+        std::numeric_limits<int>::max());
+    spTimeLimit = environmentDouble(
+        "HGASP_SP_TIME_LIMIT_SECONDS",
+        spTimeLimit,
+        std::numeric_limits<double>::min(),
+        std::numeric_limits<double>::max());
+    spMIPGap = environmentDouble(
+        "HGASP_SP_MIP_GAP",
+        spMIPGap,
+        0.0,
+        1.0);
+    spMaxPoolSize = environmentInt(
+        "HGASP_SP_MAX_POOL_SIZE",
+        spMaxPoolSize,
+        1,
+        std::numeric_limits<int>::max());
+    spThreads = environmentInt(
+        "HGASP_SP_THREADS",
+        spThreads,
+        1,
+        std::numeric_limits<int>::max());
+    spSeed = environmentInt(
+        "HGASP_SP_SEED",
+        spSeed,
+        0,
+        2000000000);
+    spOutputFlag = environmentInt(
+        "HGASP_SP_OUTPUT_FLAG",
+        spOutputFlag,
+        0,
+        1);
+    spMIPFocus = environmentInt(
+        "HGASP_SP_MIP_FOCUS",
+        spMIPFocus,
+        0,
+        3);
+    spHeuristics = environmentDouble(
+        "HGASP_SP_HEURISTICS",
+        spHeuristics,
+        0.0,
+        1.0);
+    spEnforceRepresentationRouteLimit = environmentBool(
+        "HGASP_SP_REPRESENTATION_ROUTE_LIMIT",
+        spEnforceRepresentationRouteLimit);
+
+    const char* logFile = std::getenv("HGASP_SP_LOG_FILE");
+    if (logFile != nullptr) {
+        spLogFile = logFile;
+    }
+}
+
 read_data::~read_data() {
 	dimTabu1.clear();
 	dimTabu2.clear();
-	for (int i=0;i<numC;i++){
-		delete [] D[i];
+    if (D != nullptr) {
+        for (int i = 0; i < numC; ++i) {
+            delete [] D[i];
+        }
 	}
 	delete [] D;
 	delete [] x;
@@ -24,7 +147,11 @@ read_data::~read_data() {
 	delete [] demCus;
 	delete [] invLoc;
 	delete [] openCostLoc;
-	for (int i=0;i<numL;i++) delete [] conflictLoc[i];
+    if (conflictLoc != nullptr) {
+        for (int i = 0; i < numL; ++i) {
+            delete [] conflictLoc[i];
+        }
+    }
 	delete [] conflictLoc;
 }
 void read_data::define(){
@@ -180,10 +307,15 @@ void read_data::read_fun(std::string pathInstance,std::string pathDepotCon,std::
 				}
 			}
 		}
+        else {
+            throw std::runtime_error(
+                "unsupported instance format: " + temStr2[sss - 1]);
+        }
 	}
 	else {
-		std::cout<<"Wrong when opening file"<<std::endl;
-		exit(0);}
+        throw std::runtime_error(
+            "failed to open instance file: " + pathInstance);
+    }
 	inputFile.close();
 	//
 	readDepotConfigurations();
@@ -363,7 +495,9 @@ std::vector<std::string>read_data:: splitwithstr(std::string &str,char ch){
 }
 //
 bool read_data::stopCondition(double dis){
-	if ((double)clock()/(double)CLOCKS_PER_SEC > timeLimit)
+	const double elapsedTime =
+		static_cast<double>(clock() - startTime) / CLOCKS_PER_SEC;
+	if (timeLimit > 0 && elapsedTime > timeLimit)
 		return true;
 	if (iteration > iterLimit)
 		return true;
@@ -401,7 +535,7 @@ void read_data::analyzeLocation(){
 			max_depot = invLoc[i];
 	}
 	if (min_depot > totalDemand){
-		int array[numL];
+		std::vector<int> array(numL);
 		for (int i=0;i<numL;i++){
 			array[i] = invLoc[i+numV];
 			invLoc [i+numV] = (double)totalDemand / ((double)numL / 2.);
@@ -1114,8 +1248,13 @@ void read_data::readDepotConfigurations(){
 				depotCon.push_back(array);
 			}
 		}
-		else
-			std::cout<<"The input depot configuration file is wrong"<<std::endl;
-	}
-	else return;
+        else {
+            throw std::runtime_error(
+                "failed to open depot configuration file: " +
+                pathDepotCon);
+        }
+    }
+    else {
+        return;
+    }
 }
