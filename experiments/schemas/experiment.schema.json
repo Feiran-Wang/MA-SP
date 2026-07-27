@@ -138,8 +138,13 @@
                 "gurobi_threads": {
                     "type": "integer",
                     "minimum": 1,
-                    "maximum": 2147483647,
+                    "maximum": 1024,
                     "description": "CPU threads budgeted to each solver process."
+                },
+                "allow_smt": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Explicitly permit separate solver processes on SMT siblings. When false or omitted, workers are limited to affinity-visible physical cores."
                 }
             }
         },
@@ -163,9 +168,29 @@
                     "minimum": 1,
                     "maximum": 2147483647
                 },
+                "trigger_offset": {
+                    "oneOf": [
+                        {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 2147483646
+                        },
+                        {
+                            "const": "deterministic"
+                        }
+                    ],
+                    "default": "deterministic",
+                    "description": "Per-run SP trigger offset. Matrix runs default to a stable run-id-derived offset that preserves the number of scheduled SP calls."
+                },
                 "time_limit_seconds": {
                     "type": "number",
                     "exclusiveMinimum": 0
+                },
+                "work_limit": {
+                    "type": "number",
+                    "minimum": 0,
+                    "default": 0,
+                    "description": "Optional deterministic Gurobi work-unit limit; zero leaves WorkLimit unset."
                 },
                 "mip_gap": {
                     "type": "number",
@@ -198,6 +223,44 @@
                     "type": "number",
                     "minimum": 0,
                     "maximum": 1
+                },
+                "wls_token_duration_minutes": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 2000000000,
+                    "default": 0,
+                    "description": "Optional WLS token-duration override. Zero keeps Gurobi's automatic policy."
+                },
+                "wls_token_refresh": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 1,
+                    "default": 0.9
+                },
+                "client_log_level": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 3,
+                    "default": 1,
+                    "description": "Compute Server/WLS client logging; level 1 records errors only."
+                },
+                "server_timeout_seconds": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 2000000000,
+                    "default": 30
+                },
+                "environment_max_attempts": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 10,
+                    "default": 3
+                },
+                "environment_retry_base_milliseconds": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 60000,
+                    "default": 250
                 },
                 "representation_route_limit": {
                     "type": "boolean"

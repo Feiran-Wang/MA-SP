@@ -21,6 +21,10 @@ public:
     virtual ~AlgorithmOrchestrator();
 
     void run();
+    static bool shouldTriggerSp(
+        int iteration,
+        int triggerFrequency,
+        int triggerOffset);
 
 private:
     read_data * data;

@@ -129,6 +129,19 @@ python3 -m venv .venv
 均保存 resolved config、运行状态、输入哈希、Git/Gurobi provenance、
 solution 和 attempt 级日志。
 
+批量运行器会同时检测进程 affinity、逻辑 CPU、物理核和 SMT 拓扑。默认按
+物理核分配并绑定 worker，只有显式设置 `resources.allow_smt=true` 才会使用
+SMT sibling；标准配置保持每个 worker 的 Gurobi `Threads=1`。矩阵运行还会为
+各实例/seed 生成确定性的 SP 触发偏移，从而错开首次 WLS 取证和后续 SP 求解。
+当前 48 逻辑 CPU / 24 物理核环境下，完整 `100-5-XX` manifest 使用 20 个
+worker，并为系统与文件/网络服务保留 4 个物理核。
+
+每个 worker 惰性创建并复用一个 Gurobi 环境。可重试的 WLS/网络错误使用有限
+指数退避并重建环境；默认只记录客户端错误，不延长 Gurobi 自动管理的 WLS token
+生命周期。这里的 experiment worker 是独立本地进程，不等同于许可证中的
+distributed worker；项目不会隐式启用 `DistributedMIPJobs` 或消费远程
+`WorkerPool`。
+
 本地历史 Set S 结果位于 `results/set S/`。汇总命令：
 
 ```bash
@@ -278,6 +291,21 @@ python3 -m venv .venv
 New reproducible runs are stored under `artifacts/experiments/`. Every
 instance/seed run records its resolved configuration, state, input hashes,
 Git/Gurobi provenance, solution, and attempt-specific logs.
+
+The matrix runner detects process affinity, logical CPUs, physical cores, and
+SMT topology. By default it pins workers to physical cores; SMT siblings are
+used only when `resources.allow_smt=true` is explicit. Standard profiles keep
+Gurobi at `Threads=1` per worker. A deterministic per-run SP trigger offset
+also spreads initial WLS acquisition and later SP solves. On the current
+48-logical-CPU/24-physical-core host, the full `100-5-XX` manifest uses 20
+workers and leaves four physical cores for the OS and file/network services.
+
+Each worker lazily creates and reuses one Gurobi environment. Retryable
+WLS/network failures rebuild it with bounded exponential backoff; the defaults
+log client errors only and preserve Gurobi's automatic WLS token lifetime.
+An experiment worker is an independent local process, not a licensed
+distributed worker. The project does not implicitly enable
+`DistributedMIPJobs` or consume a remote `WorkerPool`.
 
 Historical Set S results are stored under `results/set S/`. Summarize them with:
 

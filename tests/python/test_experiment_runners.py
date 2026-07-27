@@ -27,6 +27,7 @@ import run_one  # noqa: E402
 def sp_config() -> dict:
     return {
         "trigger_frequency": 10,
+        "trigger_offset": 0,
         "time_limit_seconds": 1.0,
         "mip_gap": 0.0,
         "seed": 0,
@@ -92,6 +93,13 @@ def manifest() -> dict:
     }
 
 
+def test_topology(
+    physical_cores: tuple[tuple[int, ...], ...],
+) -> run_one.CpuTopology:
+    logical = tuple(cpu for core in physical_cores for cpu in core)
+    return run_one.CpuTopology(logical, physical_cores, "test")
+
+
 class ValidationTests(unittest.TestCase):
     def test_zero_time_limit_means_unlimited(self) -> None:
         value = manifest()
@@ -116,20 +124,205 @@ class ValidationTests(unittest.TestCase):
             with self.assertRaises(run_one.ExperimentError):
                 run_matrix.validate_manifest(changed)
 
-    def test_cpu_oversubscription_respects_available_affinity(self) -> None:
+    def test_gurobi_thread_limit_matches_supported_parameter_range(self) -> None:
         value = manifest()
-        value["resources"] = {"workers": 2, "gurobi_threads": 2}
+        value["resources"]["gurobi_threads"] = (
+            run_one.GUROBI_THREADS_MAX + 1
+        )
+        with self.assertRaisesRegex(run_one.ExperimentError, "at most 1024"):
+            run_matrix.validate_manifest(value)
+
+    def test_trigger_offset_must_be_within_frequency(self) -> None:
+        value = manifest()
+        value["sp"]["trigger_offset"] = value["sp"]["trigger_frequency"]
+        with self.assertRaisesRegex(
+            run_one.ExperimentError, "less than sp.trigger_frequency"
+        ):
+            run_matrix.validate_manifest(value)
+
+    def test_cpu_topology_groups_affinity_visible_siblings(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            layout = {
+                0: (0, 0),
+                1: (0, 0),
+                2: (0, 1),
+                3: (0, 1),
+            }
+            for cpu, (package, core) in layout.items():
+                topology_dir = root / f"cpu{cpu}" / "topology"
+                topology_dir.mkdir(parents=True)
+                (topology_dir / "physical_package_id").write_text(
+                    str(package), encoding="ascii"
+                )
+                (topology_dir / "core_id").write_text(
+                    str(core), encoding="ascii"
+                )
+
+            topology = run_one.detect_cpu_topology(
+                logical_cpu_ids=(1, 2, 3),
+                sysfs_cpu_root=root,
+                system_name="Linux",
+            )
+
+        self.assertEqual(topology.logical_cpu_ids, (1, 2, 3))
+        self.assertEqual(topology.physical_core_cpu_ids, ((1,), (2, 3)))
+        self.assertEqual(topology.physical_core_representatives, (1, 2))
+        self.assertEqual(topology.logical_cpu_count, 3)
+        self.assertEqual(topology.physical_core_count, 2)
+        self.assertTrue(topology.smt_available)
+        metadata = run_one.collect_platform_provenance(topology)
+        self.assertEqual(metadata["available_logical_cpu_ids"], [1, 2, 3])
+        self.assertEqual(metadata["available_physical_core_count"], 2)
+        self.assertEqual(
+            metadata["physical_core_affinity_groups"], [[1], [2, 3]]
+        )
+
+    def test_default_worker_limit_uses_physical_cores(self) -> None:
+        value = manifest()
+        value["resources"] = {"workers": 3, "gurobi_threads": 1}
+        topology = test_topology(((0, 1), (2, 3)))
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             manifest_path = root / "manifest.json"
             manifest_path.write_text("{}", encoding="utf-8")
-            with mock.patch.object(run_one, "available_cpu_count", return_value=3):
+            with mock.patch.object(
+                run_one, "detect_cpu_topology", return_value=topology
+            ):
                 with self.assertRaisesRegex(
-                    run_one.ExperimentError, "exceeding 3"
+                    run_one.ExperimentError, "available physical cores"
                 ):
                     run_matrix.resolve_manifest(
                         value, manifest_path, root, None, None, None
                     )
+
+    def test_allow_smt_is_explicit_and_uses_logical_cpu_capacity(self) -> None:
+        value = manifest()
+        value["resources"] = {
+            "workers": 3,
+            "gurobi_threads": 1,
+            "allow_smt": True,
+        }
+        topology = test_topology(((0, 1), (2, 3)))
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            manifest_path = root / "manifest.json"
+            manifest_path.write_text("{}", encoding="utf-8")
+            with mock.patch.object(
+                run_one, "detect_cpu_topology", return_value=topology
+            ):
+                resolved = run_matrix.resolve_manifest(
+                    value, manifest_path, root, None, None, None
+                )
+        self.assertTrue(resolved["resources"]["allow_smt"])
+
+    def test_thread_budget_consumes_distinct_physical_cores(self) -> None:
+        topology = test_topology(
+            ((0, 1), (2, 3), (4, 5), (6, 7))
+        )
+        pool = run_matrix.build_cpu_affinity_pool(
+            {"workers": 2, "gurobi_threads": 2, "allow_smt": False},
+            topology,
+        )
+        first = pool.acquire()
+        second = pool.acquire()
+        try:
+            self.assertEqual(first, (0, 2))
+            self.assertEqual(second, (4, 6))
+            self.assertTrue(set(first).isdisjoint(second))
+        finally:
+            pool.release(first)
+            pool.release(second)
+
+        with self.assertRaisesRegex(
+            run_one.ExperimentError, "available physical cores"
+        ):
+            run_matrix.build_cpu_affinity_pool(
+                {"workers": 3, "gurobi_threads": 2, "allow_smt": False},
+                topology,
+            )
+
+    def test_affinity_pool_never_leases_a_cpu_twice(self) -> None:
+        pool = run_matrix.CpuAffinityPool(
+            ((0,), (2,)), "physical_core_representatives"
+        )
+        first = pool.acquire()
+        second = pool.acquire()
+        try:
+            self.assertTrue(set(first).isdisjoint(second))
+        finally:
+            pool.release(first)
+            pool.release(second)
+        reacquired = pool.acquire()
+        self.assertIn(reacquired, ((0,), (2,)))
+        pool.release(reacquired)
+
+    def test_affinity_pool_is_safe_under_threadpool_concurrency(self) -> None:
+        pool = run_matrix.CpuAffinityPool(
+            ((0,), (2,)), "physical_core_representatives"
+        )
+        active: set[tuple[int, ...]] = set()
+        lock = threading.Lock()
+
+        def use_slot() -> tuple[int, ...]:
+            slot = pool.acquire()
+            try:
+                with lock:
+                    self.assertNotIn(slot, active)
+                    active.add(slot)
+                time.sleep(0.01)
+                with lock:
+                    active.remove(slot)
+                return slot
+            finally:
+                pool.release(slot)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+            used = list(executor.map(lambda _: use_slot(), range(8)))
+        self.assertEqual(set(used), {(0,), (2,)})
+
+    def test_deterministic_trigger_offset_is_stable_and_preserves_calls(
+        self,
+    ) -> None:
+        frequency = 10
+        iterations = 23
+        first = run_matrix.deterministic_trigger_offset(
+            "instance__seed_7", frequency, iterations
+        )
+        second = run_matrix.deterministic_trigger_offset(
+            "instance__seed_7", frequency, iterations
+        )
+        self.assertEqual(first, second)
+        self.assertGreaterEqual(first, 0)
+        self.assertLessEqual(first, 3)
+        self.assertEqual(
+            (iterations - first) // frequency,
+            iterations // frequency,
+        )
+
+    def test_matrix_defaults_trigger_offset_to_deterministic(self) -> None:
+        value = manifest()
+        del value["sp"]["trigger_offset"]
+        value["seeds"] = [0, 1]
+        topology = test_topology(((0, 1), (2, 3)))
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            manifest_path = root / "manifest.json"
+            manifest_path.write_text("{}", encoding="utf-8")
+            with mock.patch.object(
+                run_one, "detect_cpu_topology", return_value=topology
+            ):
+                resolved = run_matrix.resolve_manifest(
+                    value, manifest_path, root, None, None, None
+                )
+            runs = run_matrix.expand_runs(resolved, root / "runs")
+
+        self.assertEqual(resolved["sp"]["trigger_offset"], "deterministic")
+        for config, _ in runs:
+            offset = config["sp"]["trigger_offset"]
+            self.assertIsInstance(offset, int)
+            self.assertGreaterEqual(offset, 0)
+            self.assertLess(offset, config["sp"]["trigger_frequency"])
 
     def test_environment_mapping_is_explicit_and_safe(self) -> None:
         config = {
@@ -141,6 +334,16 @@ class ValidationTests(unittest.TestCase):
         overrides = run_one._environment_overrides(config)
         self.assertEqual(overrides["EXPERIMENT_LABEL"], "alpha beta")
         self.assertEqual(overrides["HGASP_SP_THREADS"], "2")
+        self.assertEqual(overrides["HGASP_SP_TRIGGER_OFFSET"], "0")
+        self.assertEqual(overrides["HGASP_SP_WORK_LIMIT"], "0")
+        self.assertEqual(overrides["HGASP_SP_CLIENT_LOG_LEVEL"], "1")
+        self.assertEqual(
+            overrides["HGASP_SP_ENVIRONMENT_MAX_ATTEMPTS"], "3"
+        )
+        self.assertEqual(
+            overrides["HGASP_SP_ENVIRONMENT_RETRY_BASE_MILLISECONDS"],
+            "250",
+        )
         self.assertEqual(overrides["GUROBI_HOME"], "/gurobi root")
 
         for key in (
@@ -153,8 +356,76 @@ class ValidationTests(unittest.TestCase):
             with self.assertRaises(run_one.ExperimentError):
                 run_one.validate_environment_mapping({key: "do-not-record"})
 
+    def test_optional_gurobi_environment_controls_are_validated(self) -> None:
+        value = sp_config()
+        value.update(run_one.SP_OPTIONAL_DEFAULTS)
+        run_one.validate_sp_config(value)
+
+        invalid_cases = {
+            "work_limit": -1.0,
+            "wls_token_duration_minutes": -1,
+            "wls_token_refresh": 1.1,
+            "client_log_level": 4,
+            "server_timeout_seconds": 0,
+            "environment_max_attempts": 11,
+            "environment_retry_base_milliseconds": 60001,
+        }
+        for field, invalid in invalid_cases.items():
+            with self.subTest(field=field):
+                changed = dict(value)
+                changed[field] = invalid
+                with self.assertRaises(run_one.ExperimentError):
+                    run_one.validate_sp_config(changed)
+
 
 class ExecutionTests(unittest.TestCase):
+    def test_solver_inherits_and_records_assigned_cpu_affinity(self) -> None:
+        if not hasattr(os, "sched_getaffinity") or not hasattr(
+            os, "sched_setaffinity"
+        ):
+            self.skipTest("Linux CPU affinity is unavailable")
+
+        original_affinity = set(os.sched_getaffinity(0))
+        target_cpu = min(original_affinity)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            binary = root / "affinity-solver"
+            instance = root / "instance.json"
+            instance.write_text("{}", encoding="utf-8")
+            make_executable(
+                binary,
+                (
+                    "awk '/^Cpus_allowed_list:/ {print $2}' "
+                    '/proc/self/status > "$2"\n'
+                ),
+            )
+            run_dir = root / "run"
+            config = run_config(root, binary, instance, run_dir)
+
+            result = run_one.execute_run(
+                config,
+                run_dir,
+                root,
+                shared_provenance=provenance(),
+                cpu_affinity=(target_cpu,),
+                affinity_mode="physical_core_representatives",
+            )
+
+            self.assertEqual(result["status"], "success")
+            self.assertEqual(
+                result["cpu_affinity"]["requested_logical_cpu_ids"],
+                [target_cpu],
+            )
+            self.assertEqual(
+                result["cpu_affinity"]["effective_logical_cpu_ids"],
+                [target_cpu],
+            )
+            self.assertEqual(
+                Path(config["solution"]).read_text(encoding="utf-8").strip(),
+                str(target_cpu),
+            )
+        self.assertEqual(set(os.sched_getaffinity(0)), original_affinity)
+
     def test_paths_with_spaces_and_missing_solution_recovery(self) -> None:
         with tempfile.TemporaryDirectory(prefix="hgasp runner ") as temporary:
             root = Path(temporary)

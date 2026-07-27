@@ -6,9 +6,11 @@ from __future__ import annotations
 import argparse
 import concurrent.futures
 import copy
+import hashlib
 import json
 import math
 import os
+import queue
 import shlex
 import sys
 import threading
@@ -18,6 +20,102 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 import run_one
 
 
+class CpuAffinityPool:
+    """Thread-safe leases for non-overlapping solver CPU affinities."""
+
+    def __init__(
+        self,
+        slots: Sequence[Sequence[int]],
+        mode: str,
+    ) -> None:
+        normalized = tuple(
+            tuple(sorted(set(int(cpu) for cpu in slot))) for slot in slots
+        )
+        if not normalized or any(not slot for slot in normalized):
+            raise run_one.ExperimentError(
+                "CPU affinity scheduler requires non-empty slots"
+            )
+        flattened = [cpu for slot in normalized for cpu in slot]
+        if len(set(flattened)) != len(flattened):
+            raise run_one.ExperimentError(
+                "CPU affinity scheduler slots overlap"
+            )
+
+        self.mode = mode
+        self._slots = frozenset(normalized)
+        self._leased: set[Tuple[int, ...]] = set()
+        self._lock = threading.Lock()
+        self._available: queue.Queue[Tuple[int, ...]] = queue.Queue()
+        for slot in normalized:
+            self._available.put(slot)
+
+    @property
+    def size(self) -> int:
+        return len(self._slots)
+
+    def acquire(self) -> Tuple[int, ...]:
+        slot = self._available.get()
+        with self._lock:
+            if slot in self._leased:
+                raise run_one.ExperimentError(
+                    f"CPU affinity slot was leased twice: {slot}"
+                )
+            self._leased.add(slot)
+        return slot
+
+    def release(self, slot: Sequence[int]) -> None:
+        normalized = tuple(sorted(set(int(cpu) for cpu in slot)))
+        with self._lock:
+            if normalized not in self._leased:
+                raise run_one.ExperimentError(
+                    f"CPU affinity slot was not leased: {normalized}"
+                )
+            self._leased.remove(normalized)
+        self._available.put(normalized)
+
+
+def build_cpu_affinity_pool(
+    resources: Mapping[str, Any],
+    topology: run_one.CpuTopology,
+) -> CpuAffinityPool:
+    workers = int(resources["workers"])
+    allow_smt = bool(resources.get("allow_smt", False))
+    cpu_units = topology.scheduling_slots(allow_smt)
+    gurobi_threads = int(resources["gurobi_threads"])
+    required_units = workers * gurobi_threads
+    capacity_name = "logical CPUs with SMT" if allow_smt else "physical cores"
+    if required_units > len(cpu_units):
+        opt_in = (
+            ""
+            if allow_smt
+            else "; set resources.allow_smt=true explicitly to use SMT siblings"
+        )
+        raise run_one.ExperimentError(
+            f"workers ({workers}) * gurobi_threads ({gurobi_threads}) = "
+            f"{required_units}, exceeding {len(cpu_units)} available "
+            f"{capacity_name}{opt_in}"
+        )
+
+    selected_units = cpu_units[:required_units]
+    slots = []
+    for start in range(0, required_units, gurobi_threads):
+        affinity = tuple(
+            cpu
+            for unit in selected_units[start : start + gurobi_threads]
+            for cpu in unit
+        )
+        slots.append(affinity)
+
+    return CpuAffinityPool(
+        slots,
+        (
+            "logical_cpu_smt"
+            if allow_smt
+            else "physical_core_representatives"
+        ),
+    )
+
+
 def _require_integer(
     value: Any,
     field: str,
@@ -25,6 +123,23 @@ def _require_integer(
     maximum: Optional[int] = None,
 ) -> int:
     return run_one.require_integer(value, field, minimum, maximum)
+
+
+def deterministic_trigger_offset(
+    run_id: str,
+    trigger_frequency: int,
+    iteration_limit: int,
+) -> int:
+    """Return a stable offset without reducing the scheduled SP call count."""
+
+    maximum_offset = min(
+        trigger_frequency - 1,
+        iteration_limit % trigger_frequency,
+    )
+    if maximum_offset <= 0:
+        return 0
+    digest = hashlib.sha256(run_id.encode("utf-8")).digest()
+    return int.from_bytes(digest[:8], "big") % (maximum_offset + 1)
 
 
 def _validate_keys(
@@ -177,7 +292,7 @@ def validate_manifest(manifest: Mapping[str, Any]) -> None:
     _validate_keys(
         resources,
         "resources",
-        ("workers", "gurobi_threads"),
+        ("workers", "gurobi_threads", "allow_smt"),
         ("workers", "gurobi_threads"),
     )
     _validate_keys(
@@ -185,13 +300,21 @@ def validate_manifest(manifest: Mapping[str, Any]) -> None:
         "sp",
         (
             "trigger_frequency",
+            "trigger_offset",
             "time_limit_seconds",
+            "work_limit",
             "mip_gap",
             "seed",
             "max_pool_size",
             "output_flag",
             "mip_focus",
             "heuristics",
+            "wls_token_duration_minutes",
+            "wls_token_refresh",
+            "client_log_level",
+            "server_timeout_seconds",
+            "environment_max_attempts",
+            "environment_retry_base_milliseconds",
             "representation_route_limit",
         ),
         (
@@ -238,8 +361,12 @@ def validate_manifest(manifest: Mapping[str, Any]) -> None:
         resources.get("gurobi_threads"),
         "resources.gurobi_threads",
         1,
-        run_one.CPP_INT_MAX,
+        run_one.GUROBI_THREADS_MAX,
     )
+    if "allow_smt" in resources and not isinstance(
+        resources["allow_smt"], bool
+    ):
+        raise run_one.ExperimentError("resources.allow_smt must be boolean")
     run_one.validate_sp_config(sp)
     run_one.validate_environment_mapping(manifest.get("environment", {}))
 
@@ -274,6 +401,7 @@ def resolve_manifest(
     workers_override: Optional[int],
     threads_override: Optional[int],
     output_override: Optional[str],
+    allow_smt_override: Optional[bool] = None,
 ) -> Dict[str, Any]:
     validate_manifest(manifest)
     resolved = copy.deepcopy(manifest)
@@ -291,10 +419,17 @@ def resolve_manifest(
         resolved["resources"]["workers"] = workers_override
     if threads_override is not None:
         resolved["resources"]["gurobi_threads"] = threads_override
+    if allow_smt_override is not None:
+        resolved["resources"]["allow_smt"] = allow_smt_override
+    else:
+        resolved["resources"].setdefault("allow_smt", False)
     if resolved.get("gurobi_home"):
         resolved["gurobi_home"] = str(
             run_one.resolve_path(resolved["gurobi_home"], repo_root)
         )
+    resolved["sp"].setdefault("trigger_offset", "deterministic")
+    for field, default in run_one.SP_OPTIONAL_DEFAULTS.items():
+        resolved["sp"].setdefault(field, default)
 
     workers = _require_integer(
         resolved["resources"]["workers"],
@@ -306,14 +441,19 @@ def resolve_manifest(
         resolved["resources"]["gurobi_threads"],
         "resources.gurobi_threads",
         1,
-        run_one.CPP_INT_MAX,
+        run_one.GUROBI_THREADS_MAX,
     )
-    cpu_count = run_one.available_cpu_count()
-    if workers * gurobi_threads > cpu_count:
-        raise run_one.ExperimentError(
-            f"workers ({workers}) * gurobi_threads ({gurobi_threads}) = "
-            f"{workers * gurobi_threads}, exceeding {cpu_count} logical CPUs"
-        )
+    allow_smt = resolved["resources"]["allow_smt"]
+    if not isinstance(allow_smt, bool):
+        raise run_one.ExperimentError("resources.allow_smt must be boolean")
+    build_cpu_affinity_pool(
+        {
+            "workers": workers,
+            "gurobi_threads": gurobi_threads,
+            "allow_smt": allow_smt,
+        },
+        run_one.detect_cpu_topology(),
+    )
 
     identifiers = [instance["id"] for instance in resolved["instances"]]
     if len(set(identifiers)) != len(identifiers):
@@ -331,6 +471,13 @@ def expand_runs(
         for seed in manifest["seeds"]:
             run_id = f"{instance['id']}__seed_{seed}"
             run_dir = experiment_root / "runs" / instance["id"] / f"seed_{seed}"
+            sp = dict(manifest["sp"])
+            if sp["trigger_offset"] == "deterministic":
+                sp["trigger_offset"] = deterministic_trigger_offset(
+                    run_id,
+                    int(sp["trigger_frequency"]),
+                    int(manifest["limits"]["iterations"]),
+                )
             config: Dict[str, Any] = {
                 "schema_version": run_one.SCHEMA_VERSION,
                 "experiment_name": manifest["name"],
@@ -345,9 +492,10 @@ def expand_runs(
                 "is_optimal": instance["is_optimal"],
                 "limits": dict(manifest["limits"]),
                 "resources": {
-                    "gurobi_threads": manifest["resources"]["gurobi_threads"]
+                    "gurobi_threads": manifest["resources"]["gurobi_threads"],
+                    "allow_smt": manifest["resources"]["allow_smt"],
                 },
-                "sp": dict(manifest["sp"]),
+                "sp": sp,
                 "environment": dict(manifest.get("environment", {})),
                 "gurobi_home": manifest.get("gurobi_home"),
                 "manifest": {
@@ -367,16 +515,23 @@ def _execute_job(
     force_successful: bool,
     shared_provenance: Mapping[str, Any],
     cancellation_event: threading.Event,
+    affinity_pool: CpuAffinityPool,
 ) -> Dict[str, Any]:
     config, run_dir = job
-    return run_one.execute_run(
-        config,
-        run_dir,
-        repo_root,
-        force_successful=force_successful,
-        shared_provenance=shared_provenance,
-        cancellation_event=cancellation_event,
-    )
+    affinity = affinity_pool.acquire()
+    try:
+        return run_one.execute_run(
+            config,
+            run_dir,
+            repo_root,
+            force_successful=force_successful,
+            shared_provenance=shared_provenance,
+            cancellation_event=cancellation_event,
+            cpu_affinity=affinity,
+            affinity_mode=affinity_pool.mode,
+        )
+    finally:
+        affinity_pool.release(affinity)
 
 
 def validate_input_paths(manifest: Mapping[str, Any]) -> None:
@@ -418,6 +573,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--gurobi-threads", type=int, help="override Gurobi threads per run"
     )
     parser.add_argument(
+        "--allow-smt",
+        action="store_true",
+        default=None,
+        help=(
+            "explicitly allow separate workers on SMT siblings; by default "
+            "workers are limited to physical cores"
+        ),
+    )
+    parser.add_argument(
         "--force-successful",
         action="store_true",
         help="replace successful results instead of skipping them",
@@ -455,12 +619,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             arguments.workers,
             arguments.gurobi_threads,
             arguments.output_root,
+            arguments.allow_smt,
         )
         experiment_root = (
             Path(resolved["output_root"]) / run_one.safe_identifier(resolved["name"])
         )
         jobs = expand_runs(resolved, experiment_root)
         validate_input_paths(resolved)
+        cpu_topology = run_one.detect_cpu_topology()
+        affinity_pool = build_cpu_affinity_pool(
+            resolved["resources"], cpu_topology
+        )
     except run_one.ExperimentError as error:
         print(f"error: {error}", file=sys.stderr)
         return 2
@@ -468,7 +637,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if arguments.dry_run:
         print(
             f"{len(jobs)} runs; workers={resolved['resources']['workers']}; "
-            f"gurobi_threads={resolved['resources']['gurobi_threads']}"
+            f"gurobi_threads={resolved['resources']['gurobi_threads']}; "
+            f"allow_smt={str(resolved['resources']['allow_smt']).lower()}; "
+            f"physical_cores={cpu_topology.physical_core_count}; "
+            f"logical_cpus={cpu_topology.logical_cpu_count}"
         )
         for config, run_dir in jobs:
             print(f"{config['run_id']} -> {run_dir}")
@@ -478,7 +650,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     # Capture source provenance before this invocation writes any artifacts.
     shared_provenance = {
         "git": run_one.collect_git_provenance(repo_root),
-        "platform": run_one.collect_platform_provenance(),
+        "platform": run_one.collect_platform_provenance(cpu_topology),
         "gurobi": run_one.detect_gurobi(resolved.get("gurobi_home"), repo_root),
     }
 
@@ -503,6 +675,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 arguments.force_successful,
                 shared_provenance,
                 cancellation_event,
+                affinity_pool,
             ): job[0]["run_id"]
             for job in jobs
         }

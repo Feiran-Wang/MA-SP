@@ -88,12 +88,17 @@ for every matrix cell and attempt.
 manifest when:
 
 ```text
-workers × gurobi_threads > logical CPU count
+workers × gurobi_threads > affinity-visible physical core count
 ```
 
-It also pins common OpenMP and numerical-library thread environment variables
-to the same per-run value. `resources.gurobi_threads` is passed to the solver
-as `HGASP_SP_THREADS`; the current smoke profile uses one.
+By default, each solver thread is pinned to a distinct physical-core
+representative. Set `resources.allow_smt=true` only for an explicit SMT
+experiment; that mode uses every physical core once before assigning sibling
+hardware threads. Requested and effective affinities, the physical-core
+groups, and SMT topology are recorded in `run.json`. Common OpenMP and
+numerical-library thread variables are pinned to the same per-run value.
+`resources.gurobi_threads` is passed as `HGASP_SP_THREADS`; the standard
+profiles keep it at one.
 
 The required `sp` object makes every matheuristic setting part of the resolved
 configuration and its hash. The runner exports it through this explicit
@@ -102,18 +107,36 @@ contract:
 | Manifest value | Solver environment variable |
 |---|---|
 | `sp.trigger_frequency` | `HGASP_SP_TRIGGER_FREQUENCY` |
+| `sp.trigger_offset` | `HGASP_SP_TRIGGER_OFFSET` |
 | `sp.time_limit_seconds` | `HGASP_SP_TIME_LIMIT_SECONDS` |
+| `sp.work_limit` | `HGASP_SP_WORK_LIMIT` |
 | `sp.mip_gap` | `HGASP_SP_MIP_GAP` |
 | `sp.seed` | `HGASP_SP_SEED` |
 | `sp.max_pool_size` | `HGASP_SP_MAX_POOL_SIZE` |
 | `sp.output_flag` | `HGASP_SP_OUTPUT_FLAG` |
 | `sp.mip_focus` | `HGASP_SP_MIP_FOCUS` |
 | `sp.heuristics` | `HGASP_SP_HEURISTICS` |
+| `sp.wls_token_duration_minutes` | `HGASP_SP_WLS_TOKEN_DURATION_MINUTES` |
+| `sp.wls_token_refresh` | `HGASP_SP_WLS_TOKEN_REFRESH` |
+| `sp.client_log_level` | `HGASP_SP_CLIENT_LOG_LEVEL` |
+| `sp.server_timeout_seconds` | `HGASP_SP_SERVER_TIMEOUT_SECONDS` |
+| `sp.environment_max_attempts` | `HGASP_SP_ENVIRONMENT_MAX_ATTEMPTS` |
+| `sp.environment_retry_base_milliseconds` | `HGASP_SP_ENVIRONMENT_RETRY_BASE_MILLISECONDS` |
 | `sp.representation_route_limit` | `HGASP_SP_REPRESENTATION_ROUTE_LIMIT` |
 | `resources.gurobi_threads` | `HGASP_SP_THREADS` |
 
 Boolean settings are encoded as `1` or `0`. These effective values appear in
 `run.json` under `environment_overrides`.
+
+Matrix runs default `sp.trigger_offset` to `"deterministic"`. The resolved
+integer is derived from the run ID and limited so an iteration-bounded run
+keeps the same number of scheduled SP calls. This spreads WLS environment
+starts and SP solves without depending on process launch order. A direct
+`run_one.py` invocation defaults to offset zero.
+
+`work_limit=0` leaves Gurobi WorkLimit unset. Likewise,
+`wls_token_duration_minutes=0` preserves Gurobi's automatic WLS token policy;
+the runner does not lengthen short-lived license sessions by default.
 
 ## Resume and retry rules
 

@@ -8,6 +8,7 @@ depot-configuration, and output paths may safely contain spaces.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import datetime as dt
 import hashlib
 import json
@@ -22,6 +23,7 @@ import sys
 import tempfile
 import threading
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
@@ -30,6 +32,16 @@ SCHEMA_VERSION = 2
 SUCCESS_STATUS = "success"
 CPP_INT_MAX = 2_147_483_647
 SP_SEED_MAX = 2_000_000_000
+GUROBI_THREADS_MAX = 1024
+SP_OPTIONAL_DEFAULTS: Dict[str, Any] = {
+    "work_limit": 0.0,
+    "wls_token_duration_minutes": 0,
+    "wls_token_refresh": 0.9,
+    "client_log_level": 1,
+    "server_timeout_seconds": 30,
+    "environment_max_attempts": 3,
+    "environment_retry_base_milliseconds": 250,
+}
 
 _ENVIRONMENT_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _SENSITIVE_ENVIRONMENT_NAME = re.compile(
@@ -45,13 +57,21 @@ _MANAGED_ENVIRONMENT_KEYS = frozenset(
         "NUMEXPR_NUM_THREADS",
         "HGASP_SP_THREADS",
         "HGASP_SP_TRIGGER_FREQUENCY",
+        "HGASP_SP_TRIGGER_OFFSET",
         "HGASP_SP_TIME_LIMIT_SECONDS",
+        "HGASP_SP_WORK_LIMIT",
         "HGASP_SP_MIP_GAP",
         "HGASP_SP_SEED",
         "HGASP_SP_MAX_POOL_SIZE",
         "HGASP_SP_OUTPUT_FLAG",
         "HGASP_SP_MIP_FOCUS",
         "HGASP_SP_HEURISTICS",
+        "HGASP_SP_WLS_TOKEN_DURATION_MINUTES",
+        "HGASP_SP_WLS_TOKEN_REFRESH",
+        "HGASP_SP_CLIENT_LOG_LEVEL",
+        "HGASP_SP_SERVER_TIMEOUT_SECONDS",
+        "HGASP_SP_ENVIRONMENT_MAX_ATTEMPTS",
+        "HGASP_SP_ENVIRONMENT_RETRY_BASE_MILLISECONDS",
         "HGASP_SP_REPRESENTATION_ROUTE_LIMIT",
         "HGASP_LOG_DIR",
         "HGASP_LOG_CONSOLE",
@@ -64,6 +84,64 @@ _ACTIVE_PROCESSES: set[subprocess.Popen] = set()
 
 class ExperimentError(RuntimeError):
     """Raised when an experiment cannot be configured safely."""
+
+
+@dataclass(frozen=True)
+class CpuTopology:
+    """CPU resources available to the runner after process affinity is applied."""
+
+    logical_cpu_ids: Tuple[int, ...]
+    physical_core_cpu_ids: Tuple[Tuple[int, ...], ...]
+    source: str
+
+    @property
+    def logical_cpu_count(self) -> int:
+        return len(self.logical_cpu_ids)
+
+    @property
+    def physical_core_count(self) -> int:
+        return len(self.physical_core_cpu_ids)
+
+    @property
+    def physical_core_representatives(self) -> Tuple[int, ...]:
+        return tuple(core[0] for core in self.physical_core_cpu_ids)
+
+    @property
+    def threads_per_core(self) -> int:
+        return max((len(core) for core in self.physical_core_cpu_ids), default=1)
+
+    @property
+    def smt_available(self) -> bool:
+        return any(len(core) > 1 for core in self.physical_core_cpu_ids)
+
+    def scheduling_slots(self, allow_smt: bool) -> Tuple[Tuple[int, ...], ...]:
+        primary = [(core[0],) for core in self.physical_core_cpu_ids]
+        if allow_smt:
+            # Consume one hardware thread from every physical core before
+            # allocating any SMT sibling.
+            siblings = [
+                (cpu,)
+                for core in self.physical_core_cpu_ids
+                for cpu in core[1:]
+            ]
+            return tuple(primary + siblings)
+        return tuple(primary)
+
+    def as_metadata(self) -> Dict[str, Any]:
+        return {
+            "source": self.source,
+            "available_logical_cpu_count": self.logical_cpu_count,
+            "available_logical_cpu_ids": list(self.logical_cpu_ids),
+            "available_physical_core_count": self.physical_core_count,
+            "physical_core_representatives": list(
+                self.physical_core_representatives
+            ),
+            "physical_core_affinity_groups": [
+                list(core) for core in self.physical_core_cpu_ids
+            ],
+            "threads_per_core": self.threads_per_core,
+            "smt_available": self.smt_available,
+        }
 
 
 def utc_now() -> str:
@@ -169,14 +247,9 @@ def require_project_venv(
         )
 
 
-def available_cpu_count() -> int:
-    """Return the CPU count available to this process, respecting affinity."""
+def available_cpu_ids() -> Tuple[int, ...]:
+    """Return logical CPU IDs available to this process."""
 
-    process_cpu_count = getattr(os, "process_cpu_count", None)
-    if callable(process_cpu_count):
-        count = process_cpu_count()
-        if count:
-            return int(count)
     if hasattr(os, "sched_getaffinity"):
         try:
             affinity = os.sched_getaffinity(0)
@@ -184,8 +257,128 @@ def available_cpu_count() -> int:
             pass
         else:
             if affinity:
-                return len(affinity)
-    return os.cpu_count() or 1
+                return tuple(sorted(int(cpu) for cpu in affinity))
+
+    process_cpu_count = getattr(os, "process_cpu_count", None)
+    if callable(process_cpu_count):
+        count = process_cpu_count()
+        if count:
+            return tuple(range(int(count)))
+    return tuple(range(os.cpu_count() or 1))
+
+
+def available_cpu_count() -> int:
+    """Return the logical CPU count available to this process."""
+
+    return len(available_cpu_ids())
+
+
+def detect_cpu_topology(
+    logical_cpu_ids: Optional[Sequence[int]] = None,
+    sysfs_cpu_root: Path = Path("/sys/devices/system/cpu"),
+    system_name: Optional[str] = None,
+) -> CpuTopology:
+    """Group affinity-visible Linux CPUs by physical package and core."""
+
+    logical = tuple(
+        sorted(
+            set(
+                int(cpu)
+                for cpu in (
+                    available_cpu_ids()
+                    if logical_cpu_ids is None
+                    else logical_cpu_ids
+                )
+            )
+        )
+    )
+    if not logical:
+        raise ExperimentError("the process has no available logical CPUs")
+
+    detected_system = system_name or platform.system()
+    if detected_system == "Linux":
+        grouped: Dict[Tuple[int, int], List[int]] = {}
+        topology_error: Optional[Exception] = None
+        try:
+            for cpu in logical:
+                topology_root = sysfs_cpu_root / f"cpu{cpu}" / "topology"
+                package = int(
+                    (topology_root / "physical_package_id")
+                    .read_text(encoding="ascii")
+                    .strip()
+                )
+                core = int(
+                    (topology_root / "core_id")
+                    .read_text(encoding="ascii")
+                    .strip()
+                )
+                grouped.setdefault((package, core), []).append(cpu)
+        except (OSError, ValueError) as error:
+            topology_error = error
+            grouped.clear()
+        if grouped:
+            physical_cores = tuple(
+                tuple(sorted(cpus))
+                for _, cpus in sorted(
+                    grouped.items(), key=lambda item: min(item[1])
+                )
+            )
+            return CpuTopology(logical, physical_cores, "linux_sysfs")
+        raise ExperimentError(
+            "cannot detect affinity-visible physical CPU topology from "
+            f"{sysfs_cpu_root}: {topology_error or 'no core data'}"
+        )
+
+    # Outside Linux, preserve direct-run portability. The matrix runner will
+    # reject affinity binding when the platform cannot apply it.
+    return CpuTopology(
+        logical,
+        tuple((cpu,) for cpu in logical),
+        "logical_cpu_fallback",
+    )
+
+
+@contextlib.contextmanager
+def inherited_cpu_affinity(
+    cpu_ids: Optional[Sequence[int]],
+) -> Iterable[Tuple[int, ...]]:
+    """Temporarily bind the calling thread so a spawned child inherits it."""
+
+    if not hasattr(os, "sched_getaffinity") or not hasattr(
+        os, "sched_setaffinity"
+    ):
+        if cpu_ids is not None:
+            raise ExperimentError(
+                "CPU affinity binding is unavailable on this platform"
+            )
+        yield available_cpu_ids()
+        return
+
+    original = tuple(sorted(int(cpu) for cpu in os.sched_getaffinity(0)))
+    if cpu_ids is None:
+        yield original
+        return
+
+    requested = tuple(sorted(set(int(cpu) for cpu in cpu_ids)))
+    if not requested:
+        raise ExperimentError("CPU affinity cannot be empty")
+    unavailable = sorted(set(requested) - set(original))
+    if unavailable:
+        raise ExperimentError(
+            "requested CPU affinity includes unavailable logical CPU(s): "
+            + ", ".join(str(cpu) for cpu in unavailable)
+        )
+
+    try:
+        os.sched_setaffinity(0, requested)
+        effective = tuple(sorted(int(cpu) for cpu in os.sched_getaffinity(0)))
+        if effective != requested:
+            raise ExperimentError(
+                f"requested CPU affinity {requested} became {effective}"
+            )
+        yield effective
+    finally:
+        os.sched_setaffinity(0, original)
 
 
 def require_integer(
@@ -382,8 +575,11 @@ def detect_gurobi(configured_home: Optional[str], repo_root: Path) -> Dict[str, 
     return {"version": None, "home": configured_home, "source": "not detected"}
 
 
-def collect_platform_provenance() -> Dict[str, Any]:
-    return {
+def collect_platform_provenance(
+    cpu_topology: Optional[CpuTopology] = None,
+) -> Dict[str, Any]:
+    topology = cpu_topology or detect_cpu_topology()
+    result = {
         "system": platform.system(),
         "release": platform.release(),
         "version": platform.version(),
@@ -393,6 +589,8 @@ def collect_platform_provenance() -> Dict[str, Any]:
         "python_implementation": platform.python_implementation(),
         "logical_cpu_count": os.cpu_count(),
     }
+    result.update(topology.as_metadata())
+    return result
 
 
 def build_solver_command(config: Mapping[str, Any]) -> List[str]:
@@ -473,7 +671,7 @@ def _validate_run_config(config: Mapping[str, Any]) -> None:
         resources.get("gurobi_threads"),
         "resources.gurobi_threads",
         minimum=1,
-        maximum=CPP_INT_MAX,
+        maximum=GUROBI_THREADS_MAX,
     )
     available_cpus = available_cpu_count()
     if threads > available_cpus:
@@ -482,10 +680,13 @@ def _validate_run_config(config: Mapping[str, Any]) -> None:
             f"{available_cpus} available logical CPUs"
         )
     validate_environment_mapping(config.get("environment", {}))
-    validate_sp_config(sp)
+    validate_sp_config(sp, allow_deterministic_trigger_offset=False)
 
 
-def validate_sp_config(sp: Mapping[str, Any]) -> None:
+def validate_sp_config(
+    sp: Mapping[str, Any],
+    allow_deterministic_trigger_offset: bool = True,
+) -> None:
     boolean_fields = ("representation_route_limit",)
     for field in boolean_fields:
         if not isinstance(sp.get(field), bool):
@@ -497,9 +698,14 @@ def validate_sp_config(sp: Mapping[str, Any]) -> None:
         "max_pool_size": (1, CPP_INT_MAX),
         "output_flag": (0, 1),
         "mip_focus": (0, 3),
+        "wls_token_duration_minutes": (0, SP_SEED_MAX),
+        "client_log_level": (0, 3),
+        "server_timeout_seconds": (1, SP_SEED_MAX),
+        "environment_max_attempts": (1, 10),
+        "environment_retry_base_milliseconds": (0, 60000),
     }
     for field, (minimum, maximum) in integer_ranges.items():
-        value = sp.get(field)
+        value = sp.get(field, SP_OPTIONAL_DEFAULTS.get(field))
         if isinstance(value, bool) or not isinstance(value, int):
             raise ExperimentError(f"sp.{field} must be an integer")
         if value < minimum or (maximum is not None and value > maximum):
@@ -508,13 +714,33 @@ def validate_sp_config(sp: Mapping[str, Any]) -> None:
                 f"sp.{field} must be at least {minimum}{upper}"
             )
 
+    trigger_offset = sp.get("trigger_offset", 0)
+    if trigger_offset == "deterministic":
+        if not allow_deterministic_trigger_offset:
+            raise ExperimentError(
+                "sp.trigger_offset must be resolved to an integer for one run"
+            )
+    elif isinstance(trigger_offset, bool) or not isinstance(
+        trigger_offset, int
+    ):
+        raise ExperimentError(
+            "sp.trigger_offset must be an integer or 'deterministic'"
+        )
+    elif trigger_offset < 0 or trigger_offset >= sp["trigger_frequency"]:
+        raise ExperimentError(
+            "sp.trigger_offset must be at least 0 and less than "
+            "sp.trigger_frequency"
+        )
+
     numeric_ranges = {
         "time_limit_seconds": (0.0, None, False),
+        "work_limit": (0.0, None, True),
         "mip_gap": (0.0, 1.0, True),
         "heuristics": (0.0, 1.0, True),
+        "wls_token_refresh": (0.0, 1.0, True),
     }
     for field, (minimum, maximum, include_minimum) in numeric_ranges.items():
-        value = sp.get(field)
+        value = sp.get(field, SP_OPTIONAL_DEFAULTS.get(field))
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             raise ExperimentError(f"sp.{field} must be numeric")
         if not math.isfinite(float(value)):
@@ -601,8 +827,12 @@ def _environment_overrides(config: Mapping[str, Any]) -> Dict[str, str]:
             "NUMEXPR_NUM_THREADS": threads,
             "HGASP_SP_THREADS": threads,
             "HGASP_SP_TRIGGER_FREQUENCY": str(sp["trigger_frequency"]),
+            "HGASP_SP_TRIGGER_OFFSET": str(sp.get("trigger_offset", 0)),
             "HGASP_SP_TIME_LIMIT_SECONDS": format(
                 float(sp["time_limit_seconds"]), ".15g"
+            ),
+            "HGASP_SP_WORK_LIMIT": format(
+                float(sp.get("work_limit", 0.0)), ".15g"
             ),
             "HGASP_SP_MIP_GAP": format(float(sp["mip_gap"]), ".15g"),
             "HGASP_SP_SEED": str(sp["seed"]),
@@ -610,6 +840,24 @@ def _environment_overrides(config: Mapping[str, Any]) -> Dict[str, str]:
             "HGASP_SP_OUTPUT_FLAG": str(sp["output_flag"]),
             "HGASP_SP_MIP_FOCUS": str(sp["mip_focus"]),
             "HGASP_SP_HEURISTICS": format(float(sp["heuristics"]), ".15g"),
+            "HGASP_SP_WLS_TOKEN_DURATION_MINUTES": str(
+                sp.get("wls_token_duration_minutes", 0)
+            ),
+            "HGASP_SP_WLS_TOKEN_REFRESH": format(
+                float(sp.get("wls_token_refresh", 0.9)), ".15g"
+            ),
+            "HGASP_SP_CLIENT_LOG_LEVEL": str(
+                sp.get("client_log_level", 1)
+            ),
+            "HGASP_SP_SERVER_TIMEOUT_SECONDS": str(
+                sp.get("server_timeout_seconds", 30)
+            ),
+            "HGASP_SP_ENVIRONMENT_MAX_ATTEMPTS": str(
+                sp.get("environment_max_attempts", 3)
+            ),
+            "HGASP_SP_ENVIRONMENT_RETRY_BASE_MILLISECONDS": str(
+                sp.get("environment_retry_base_milliseconds", 250)
+            ),
             "HGASP_SP_REPRESENTATION_ROUTE_LIMIT": (
                 "1" if sp["representation_route_limit"] else "0"
             ),
@@ -627,6 +875,8 @@ def execute_run(
     force_successful: bool = False,
     shared_provenance: Optional[Mapping[str, Any]] = None,
     cancellation_event: Optional[threading.Event] = None,
+    cpu_affinity: Optional[Sequence[int]] = None,
+    affinity_mode: str = "unbound",
 ) -> Dict[str, Any]:
     """Execute one run and return its final run.json document."""
 
@@ -712,6 +962,11 @@ def execute_run(
         "platform": source_provenance["platform"],
         "gurobi": source_provenance["gurobi"],
     }
+    requested_affinity = (
+        sorted(set(int(cpu) for cpu in cpu_affinity))
+        if cpu_affinity is not None
+        else None
+    )
     result: Dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "experiment_name": config["experiment_name"],
@@ -728,6 +983,11 @@ def execute_run(
         "command": command,
         "cwd": str(repo_root),
         "environment_overrides": environment_overrides,
+        "cpu_affinity": {
+            "mode": affinity_mode,
+            "requested_logical_cpu_ids": requested_affinity,
+            "effective_logical_cpu_ids": None,
+        },
         "files": {
             "resolved_config": str(config_path),
             "log_directory": str(attempt_log_dir),
@@ -759,14 +1019,29 @@ def execute_run(
         with stdout_path.open("wb") as stdout_stream, stderr_path.open(
             "wb"
         ) as stderr_stream:
-            process = subprocess.Popen(
-                command,
-                cwd=str(repo_root),
-                env=process_environment,
-                stdout=stdout_stream,
-                stderr=stderr_stream,
-                start_new_session=(os.name == "posix"),
-            )
+            with inherited_cpu_affinity(cpu_affinity) as launcher_affinity:
+                process = subprocess.Popen(
+                    command,
+                    cwd=str(repo_root),
+                    env=process_environment,
+                    stdout=stdout_stream,
+                    stderr=stderr_stream,
+                    start_new_session=(os.name == "posix"),
+                )
+                effective_affinity = launcher_affinity
+                if hasattr(os, "sched_getaffinity"):
+                    try:
+                        effective_affinity = tuple(
+                            sorted(
+                                int(cpu)
+                                for cpu in os.sched_getaffinity(process.pid)
+                            )
+                        )
+                    except (OSError, ProcessLookupError):
+                        pass
+                result["cpu_affinity"]["effective_logical_cpu_ids"] = list(
+                    effective_affinity
+                )
             _register_process(process)
             try:
                 if cancellation_event is not None and cancellation_event.is_set():
@@ -869,13 +1144,27 @@ def make_direct_config(arguments: argparse.Namespace) -> Tuple[Dict[str, Any], P
         "resources": {"gurobi_threads": arguments.gurobi_threads},
         "sp": {
             "trigger_frequency": arguments.sp_trigger_frequency,
+            "trigger_offset": arguments.sp_trigger_offset,
             "time_limit_seconds": arguments.sp_time_limit,
+            "work_limit": arguments.sp_work_limit,
             "mip_gap": arguments.sp_mip_gap,
             "seed": arguments.sp_seed,
             "max_pool_size": arguments.sp_max_pool_size,
             "output_flag": arguments.sp_output_flag,
             "mip_focus": arguments.sp_mip_focus,
             "heuristics": arguments.sp_heuristics,
+            "wls_token_duration_minutes": (
+                arguments.sp_wls_token_duration_minutes
+            ),
+            "wls_token_refresh": arguments.sp_wls_token_refresh,
+            "client_log_level": arguments.sp_client_log_level,
+            "server_timeout_seconds": arguments.sp_server_timeout,
+            "environment_max_attempts": (
+                arguments.sp_environment_max_attempts
+            ),
+            "environment_retry_base_milliseconds": (
+                arguments.sp_environment_retry_base_ms
+            ),
             "representation_route_limit": (
                 arguments.sp_representation_route_limit
             ),
@@ -913,13 +1202,45 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--is-optimal", action="store_true")
     parser.add_argument("--gurobi-threads", type=int, default=1)
     parser.add_argument("--sp-trigger-frequency", type=int, default=50001)
+    parser.add_argument("--sp-trigger-offset", type=int, default=0)
     parser.add_argument("--sp-time-limit", type=float, default=360.0)
+    parser.add_argument(
+        "--sp-work-limit",
+        type=float,
+        default=0.0,
+        help="deterministic Gurobi work-unit limit; 0 disables it",
+    )
     parser.add_argument("--sp-mip-gap", type=float, default=0.001)
     parser.add_argument("--sp-seed", type=int, default=0)
     parser.add_argument("--sp-max-pool-size", type=int, default=50000)
     parser.add_argument("--sp-output-flag", type=int, choices=(0, 1), default=0)
     parser.add_argument("--sp-mip-focus", type=int, choices=range(4), default=1)
     parser.add_argument("--sp-heuristics", type=float, default=0.15)
+    parser.add_argument(
+        "--sp-wls-token-duration-minutes",
+        type=int,
+        default=0,
+        help="WLS token duration override; 0 keeps Gurobi automatic policy",
+    )
+    parser.add_argument("--sp-wls-token-refresh", type=float, default=0.9)
+    parser.add_argument(
+        "--sp-client-log-level",
+        type=int,
+        choices=range(4),
+        default=1,
+        help="Compute Server/WLS client log level (1 records errors only)",
+    )
+    parser.add_argument("--sp-server-timeout", type=int, default=30)
+    parser.add_argument(
+        "--sp-environment-max-attempts",
+        type=int,
+        default=3,
+    )
+    parser.add_argument(
+        "--sp-environment-retry-base-ms",
+        type=int,
+        default=250,
+    )
     representation_limit = parser.add_mutually_exclusive_group()
     representation_limit.add_argument(
         "--sp-representation-route-limit",

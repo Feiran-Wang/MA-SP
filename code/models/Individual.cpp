@@ -29,7 +29,8 @@ Individual::Individual()
 	  numV(0),
 	  numL(0),
 	  numC(0),
-	  checkArray(nullptr) {}
+	  checkArray(nullptr),
+	  diversityCacheValid(false) {}
 
 Individual::~Individual() {
 	delete [] client;
@@ -95,6 +96,8 @@ void Individual::define(read_data *data){
 	this->numV=data->numV;
 	this->numL = data->numL;
 	this->numC = data->numC;
+	diversityCache.resize(numV);
+	diversityCacheValid = false;
 	client=new Node [numV]{};
 	for (int i=0;i<numV;i++){
 		client[i].isDepot=false;
@@ -167,6 +170,7 @@ void Individual::define(read_data *data){
 	checkArray = new int [numV]{};
 }
 void Individual::initilization(){
+	invalidateDiversityCache();
 	saturatLoc.clear();
 	saturatRoute.clear();
 	for (int i=0;i<numV;i++){
@@ -261,6 +265,7 @@ void Individual::getSaturationDegree(){
 
 
 void Individual::updateRouteInfor(int &r, int nbMoves){
+	invalidateDiversityCache();
 	Node *mynode=route[r].depot;
 	mynode->cumulatedLoad=0;
 	mynode->position=0;
@@ -517,35 +522,68 @@ double Individual::averageBrokenPairsDistanceClosest(int nbClosest){
 	}
 	return result/(double)maxSize ;
 }
+
+void Individual::invalidateDiversityCache() noexcept {
+	diversityCacheValid = false;
+}
+
+void Individual::ensureDiversityCache() {
+	if (diversityCacheValid) {
+		return;
+	}
+	for (int i = 0; i < numV; ++i) {
+		const Node& node = client[i];
+		DiversityNodeCache& cached = diversityCache[i];
+		cached.predecessor = node.pre->cour;
+		cached.successor = node.next->cour;
+		cached.route = node.route->cour;
+		cached.location = node.route->whichLocation->cour;
+	}
+	diversityCacheValid = true;
+}
+
 double Individual::brokenPairsDistance(Individual * indiv2){
 	Node *p,*p1;bool isFirst;
 	double hammingDis = 0;
+	indiv2->ensureDiversityCache();
+	const DiversityNodeCache* comparison = indiv2->diversityCache.data();
 	for (int i=numV; i<numC; i++){
 		if (location[i-numV].used){
 			for (int j=0; j<location[i-numV].maxVisit; j++){
 				if (location[i-numV].depots[j].route->used){
 					p = &location[i-numV].depots[j];
 					p1=p->next;
-					if (indiv2->client[p1->cour].route->whichLocation->cour != p->route->whichLocation->cour)hammingDis += 10;
+					if (comparison[p1->cour].location !=
+						p->route->whichLocation->cour) {
+						hammingDis += 10;
+					}
 					isFirst = true;
 					while (isFirst || !p->next->isDepot){
-						if (indiv2->client[p->next->cour].pre->cour == p->cour || indiv2->client[p->next->cour].next->cour == p->cour)
+						const DiversityNodeCache& cached =
+							comparison[p->next->cour];
+						if (cached.predecessor == p->cour ||
+							cached.successor == p->cour)
 							hammingDis += 1;
-						else if (indiv2->client[p->next->cour].route->cour == p->route->cour){
+						else if (cached.route == p->route->cour){
 							hammingDis += 3;
 						}
-						else if (indiv2->client[p->next->cour].route->whichLocation->cour != p->route->whichLocation->cour){
+						else if (cached.location !=
+							p->route->whichLocation->cour){
 							hammingDis += 10;
 						}
 						p = p->next;
+						p = p->next;
 						isFirst = false;
 					}
-					if (indiv2->client[p->cour].pre->cour == p->next->cour || indiv2->client[p->cour].next->cour == p->next->cour)
+					const DiversityNodeCache& cached = comparison[p->cour];
+					if (cached.predecessor == p->next->cour ||
+						cached.successor == p->next->cour)
 						hammingDis += 1;
-					else if (indiv2->client[p->cour].route->cour == p->next->route->cour){
+					else if (cached.route == p->next->route->cour){
 						hammingDis += 3;
 					}
-					else if (indiv2->client[p->cour].route->whichLocation->cour != p->next->route->whichLocation->cour){
+					else if (cached.location !=
+						p->next->route->whichLocation->cour){
 						hammingDis += 10;
 					}
 				}

@@ -110,6 +110,10 @@ if(BUILD_TESTING)
     NAME cli.reject_invalid_sp_threads
     COMMAND hgasp missing.instance unused.solution 0 0 1 1 1
   )
+  add_test(
+    NAME cli.reject_invalid_sp_trigger_offset
+    COMMAND hgasp missing.instance unused.solution 0 0 1 1 1
+  )
   set_tests_properties(
     cli.reject_negative_seed
     cli.reject_trailing_numeric_text
@@ -119,6 +123,13 @@ if(BUILD_TESTING)
     cli.reject_invalid_sp_threads
     PROPERTIES
       ENVIRONMENT "HGASP_SP_THREADS=0"
+      WILL_FAIL TRUE
+  )
+  set_tests_properties(
+    cli.reject_invalid_sp_trigger_offset
+    PROPERTIES
+      ENVIRONMENT
+        "HGASP_SP_TRIGGER_FREQUENCY=10;HGASP_SP_TRIGGER_OFFSET=10"
       WILL_FAIL TRUE
   )
 
@@ -137,6 +148,20 @@ if(BUILD_TESTING)
   )
 
   add_executable(
+    hgasp_route_generator_memory_test
+    tests/unit/route_generator_memory_test.cpp
+  )
+  target_link_libraries(
+    hgasp_route_generator_memory_test
+    PRIVATE HGASP::engine
+  )
+  hgasp_enable_warnings(hgasp_route_generator_memory_test)
+  add_test(
+    NAME route_generator.memory_layout
+    COMMAND hgasp_route_generator_memory_test
+  )
+
+  add_executable(
     hgasp_sp_input_validation_test
     tests/unit/sp_input_validation_test.cpp
   )
@@ -145,6 +170,20 @@ if(BUILD_TESTING)
   add_test(
     NAME sp.input_validation
     COMMAND hgasp_sp_input_validation_test
+  )
+
+  add_executable(
+    hgasp_sp_trigger_policy_test
+    tests/unit/sp_trigger_policy_test.cpp
+  )
+  target_link_libraries(
+    hgasp_sp_trigger_policy_test
+    PRIVATE HGASP::engine
+  )
+  hgasp_enable_warnings(hgasp_sp_trigger_policy_test)
+  add_test(
+    NAME sp.trigger_policy
+    COMMAND hgasp_sp_trigger_policy_test
   )
 
   add_executable(

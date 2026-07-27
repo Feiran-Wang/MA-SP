@@ -172,6 +172,50 @@ int main() {
         return 1;
     }
 
+    invalidConfig = defaultConfig;
+    invalidConfig.threads = 1025;
+    if (expectInvalid(
+            "out-of-range thread limit",
+            invalidConfig,
+            defaultProblem,
+            {route(5, {0, 1})},
+            "thread count") != 0) {
+        return 1;
+    }
+
+    invalidConfig = defaultConfig;
+    invalidConfig.clientLogLevel = 4;
+    if (expectInvalid(
+            "out-of-range client log level",
+            invalidConfig,
+            defaultProblem,
+            {route(5, {0, 1})},
+            "client log level") != 0) {
+        return 1;
+    }
+
+    invalidConfig = defaultConfig;
+    invalidConfig.environmentMaxAttempts = 0;
+    if (expectInvalid(
+            "zero environment attempts",
+            invalidConfig,
+            defaultProblem,
+            {route(5, {0, 1})},
+            "environment attempts") != 0) {
+        return 1;
+    }
+
+    invalidConfig = defaultConfig;
+    invalidConfig.serverTimeoutSeconds = 0;
+    if (expectInvalid(
+            "zero server timeout",
+            invalidConfig,
+            defaultProblem,
+            {route(5, {0, 1})},
+            "server timeout") != 0) {
+        return 1;
+    }
+
     std::cout << "sp_input_validation_test: PASS" << std::endl;
     return 0;
 }

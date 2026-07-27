@@ -57,7 +57,12 @@ public:
 
 	// Route-pool and set-partitioning parameters.
 	int spTriggerFrequency = 50001;
+	// Delays the first SP call to frequency + offset iterations. Subsequent
+	// calls remain frequency iterations apart.
+	int spTriggerOffset = 0;
 	double spTimeLimit = 360;
+	// Optional deterministic Gurobi work budget. Zero leaves WorkLimit unset.
+	double spWorkLimit = 0;
 	double spMIPGap = 0.001;
 	int spMaxPoolSize = 50000;
 	int spThreads = 1;
@@ -67,6 +72,15 @@ public:
 	int spSeed = 0;
 	int spMIPFocus = 1;
 	double spHeuristics = 0.15;
+	// Gurobi environment and WLS reliability controls. A zero token duration
+	// preserves Gurobi's automatic policy instead of extending license
+	// sessions in short-lived experiment workers.
+	int spWLSTokenDurationMinutes = 0;
+	double spWLSTokenRefresh = 0.9;
+	int spClientLogLevel = 1;
+	int spServerTimeoutSeconds = 30;
+	int spEnvironmentMaxAttempts = 3;
+	int spEnvironmentRetryBaseMilliseconds = 250;
 	// HGAMP assumes an unlimited fleet. This optional compatibility guard
 	// prevents SP solutions from exceeding the fixed-slot Individual
 	// representation.
@@ -87,6 +101,9 @@ public:
 	int numC;
 	int vehCap;
 	int maxVnum;
+	// Row pointers retained for the existing D[from][to] API. All rows point
+	// into one contiguous allocation to improve spatial locality and reduce
+	// allocator/TLB overhead in the route-generator hot loops.
 	double** D;
 	double* x;
 	double* y;
@@ -133,6 +150,7 @@ public:
 	bool no_capacity_location = false;
 
 private:
+	double* distanceStorage;
 	int* solutionTabu;
 	double maxDemand;
 	double maxDist;

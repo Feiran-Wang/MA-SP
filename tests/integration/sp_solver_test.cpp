@@ -38,6 +38,12 @@ int main() {
     config.outputFlag = 0;
     config.mipFocus = 0;
     config.heuristics = 0.05;
+    if (config.workLimit != 0.0 ||
+        config.wlsTokenDurationMinutes != 0 ||
+        config.clientLogLevel != 1 ||
+        config.serverTimeoutSeconds != 30) {
+        return fail("SP reliability defaults changed unexpectedly");
+    }
 
     SPSolver solver(config);
 
@@ -58,6 +64,10 @@ int main() {
     if (invalid.status != SpStatus::invalid_input ||
         invalid.diagnostic.find("does not cover") == std::string::npos) {
         return fail("incomplete route pool was not rejected before optimization");
+    }
+    if (invalid.environmentStartAttempts != 0 ||
+        invalid.validationTimeSeconds < 0.0) {
+        return fail("invalid input should not acquire a Gurobi environment");
     }
 
     const std::vector<StandaloneRoute> pool = {
@@ -102,6 +112,43 @@ int main() {
         result.totalTimeSeconds < result.solveTimeSeconds) {
         return fail("solver timings are inconsistent");
     }
+    if (result.validationTimeSeconds < 0.0 ||
+        result.environmentTimeSeconds < 0.0 ||
+        result.buildTimeSeconds < 0.0 ||
+        result.optimizeTimeSeconds < 0.0 ||
+        result.postprocessTimeSeconds < 0.0 ||
+        result.retrySleepTimeSeconds < 0.0) {
+        return fail("segmented SP timings must be non-negative");
+    }
+    if (result.environmentStartAttempts != 1 ||
+        result.environmentRetryCount != 0 ||
+        result.environmentReused) {
+        return fail("first valid solve should lazily start one environment");
+    }
+    if (result.modelVariables != 8 ||
+        result.modelConstraints != 11 ||
+        result.modelNonzeros <= 0) {
+        return fail("strong route-depot linking model has unexpected dimensions");
+    }
+    if (!result.work.has_value() || !result.nodeCount.has_value()) {
+        return fail("Gurobi work and node metrics were not captured");
+    }
+    if (result.mipStartApplied || result.mipStartRouteCount != 0) {
+        return fail("the first solve must not report a prior MIP start");
+    }
+
+    const SpResult repeated = solver.solve(problem, pool);
+    if (repeated.status != SpStatus::optimal ||
+        !repeated.hasFeasibleSolution() ||
+        !repeated.mipStartApplied ||
+        repeated.mipStartRouteCount != 2 ||
+        !repeated.environmentReused ||
+        repeated.environmentStartAttempts != 0 ||
+        repeated.selectedRouteIndices !=
+            std::vector<std::size_t>({2, 3})) {
+        return fail(
+            "same-problem solve did not reuse the environment and complete MIP start");
+    }
 
     SpProblem noExactPartition;
     noExactPartition.name = "no_exact_partition";
@@ -123,6 +170,9 @@ int main() {
         infeasible.objective.has_value() ||
         !infeasible.selectedRouteIndices.empty()) {
         return fail("exact-cover infeasibility was not reported safely");
+    }
+    if (infeasible.mipStartApplied) {
+        return fail("MIP starts must not cross SpProblem identities");
     }
 
     SpProblem unlimitedFleet;
@@ -148,6 +198,9 @@ int main() {
         return fail(
             "unlimited-fleet model should select all three singleton routes");
     }
+    if (unlimited.mipStartApplied) {
+        return fail("a different SpProblem must not inherit a cached MIP start");
+    }
 
     unlimitedFleet.depots[0].representationRouteLimit = 2;
     const SpResult representationLimited =
@@ -157,6 +210,19 @@ int main() {
         representationLimited.solutionCount != 0) {
         return fail(
             "representation limit should be separate from fleet size");
+    }
+    if (representationLimited.mipStartApplied) {
+        return fail("a changed representation bound must invalidate the MIP start");
+    }
+
+    SpConfig invalidWorkConfig = config;
+    invalidWorkConfig.workLimit = -1.0;
+    SPSolver invalidWorkSolver(invalidWorkConfig);
+    const SpResult invalidWork =
+        invalidWorkSolver.solve(problem, pool);
+    if (invalidWork.status != SpStatus::invalid_input ||
+        invalidWork.environmentStartAttempts != 0) {
+        return fail("negative WorkLimit should fail before Gurobi acquisition");
     }
 
     SpConfig exhaustedConfig = config;

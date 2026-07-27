@@ -68,6 +68,7 @@ read_data::read_data() {
     numL = 0;
     numC = 0;
     D = nullptr;
+    distanceStorage = nullptr;
     x = nullptr;
     y = nullptr;
     demCus = nullptr;
@@ -83,10 +84,26 @@ void read_data::applyEnvironmentOverrides() {
         spTriggerFrequency,
         1,
         std::numeric_limits<int>::max());
+    spTriggerOffset = environmentInt(
+        "HGASP_SP_TRIGGER_OFFSET",
+        spTriggerOffset,
+        0,
+        std::numeric_limits<int>::max());
+    if (spTriggerOffset < 0 ||
+        spTriggerOffset >= spTriggerFrequency) {
+        throw std::invalid_argument(
+            "HGASP_SP_TRIGGER_OFFSET must be non-negative and smaller than "
+            "HGASP_SP_TRIGGER_FREQUENCY");
+    }
     spTimeLimit = environmentDouble(
         "HGASP_SP_TIME_LIMIT_SECONDS",
         spTimeLimit,
         std::numeric_limits<double>::min(),
+        std::numeric_limits<double>::max());
+    spWorkLimit = environmentDouble(
+        "HGASP_SP_WORK_LIMIT",
+        spWorkLimit,
+        0.0,
         std::numeric_limits<double>::max());
     spMIPGap = environmentDouble(
         "HGASP_SP_MIP_GAP",
@@ -102,7 +119,7 @@ void read_data::applyEnvironmentOverrides() {
         "HGASP_SP_THREADS",
         spThreads,
         1,
-        std::numeric_limits<int>::max());
+        1024);
     spSeed = environmentInt(
         "HGASP_SP_SEED",
         spSeed,
@@ -123,6 +140,36 @@ void read_data::applyEnvironmentOverrides() {
         spHeuristics,
         0.0,
         1.0);
+    spWLSTokenDurationMinutes = environmentInt(
+        "HGASP_SP_WLS_TOKEN_DURATION_MINUTES",
+        spWLSTokenDurationMinutes,
+        0,
+        2000000000);
+    spWLSTokenRefresh = environmentDouble(
+        "HGASP_SP_WLS_TOKEN_REFRESH",
+        spWLSTokenRefresh,
+        0.0,
+        1.0);
+    spClientLogLevel = environmentInt(
+        "HGASP_SP_CLIENT_LOG_LEVEL",
+        spClientLogLevel,
+        0,
+        3);
+    spServerTimeoutSeconds = environmentInt(
+        "HGASP_SP_SERVER_TIMEOUT_SECONDS",
+        spServerTimeoutSeconds,
+        1,
+        2000000000);
+    spEnvironmentMaxAttempts = environmentInt(
+        "HGASP_SP_ENVIRONMENT_MAX_ATTEMPTS",
+        spEnvironmentMaxAttempts,
+        1,
+        10);
+    spEnvironmentRetryBaseMilliseconds = environmentInt(
+        "HGASP_SP_ENVIRONMENT_RETRY_BASE_MILLISECONDS",
+        spEnvironmentRetryBaseMilliseconds,
+        0,
+        60000);
     spEnforceRepresentationRouteLimit = environmentBool(
         "HGASP_SP_REPRESENTATION_ROUTE_LIMIT",
         spEnforceRepresentationRouteLimit);
@@ -136,11 +183,7 @@ void read_data::applyEnvironmentOverrides() {
 read_data::~read_data() {
 	dimTabu1.clear();
 	dimTabu2.clear();
-    if (D != nullptr) {
-        for (int i = 0; i < numC; ++i) {
-            delete [] D[i];
-        }
-	}
+	delete [] distanceStorage;
 	delete [] D;
 	delete [] x;
 	delete [] y;
@@ -158,8 +201,15 @@ void read_data::define(){
 	dimTabu1.clear();
 	dimTabu2.clear();
 
-	D=new double *[numC];
-	for (int i=0;i<numC;i++) D[i]=new double [numC];
+	D = new double *[numC];
+	distanceStorage = new double[
+		static_cast<std::size_t>(numC) *
+		static_cast<std::size_t>(numC)]{};
+	for (int i = 0; i < numC; ++i) {
+		D[i] = distanceStorage +
+			static_cast<std::size_t>(i) *
+			static_cast<std::size_t>(numC);
+	}
 	x=new double [numC];
 	y=new double [numC];
 	demCus=new int [numV];

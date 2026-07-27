@@ -57,17 +57,46 @@ both `.git` and `.git-hga-sp` metadata directories.
 One matrix worker is one HGA-SP process. The manifest is rejected when:
 
 ```text
-workers × gurobi_threads > os.cpu_count()
+workers × gurobi_threads > affinity-visible physical core count
 ```
 
-Common OpenMP and BLAS thread variables are pinned to `gurobi_threads` to
-reduce hidden oversubscription. The runner sends this value through
+The runner leases non-overlapping physical-core representatives and makes each
+solver process inherit its assigned affinity. SMT siblings are excluded unless
+`resources.allow_smt=true` is declared; in that mode all physical cores are
+used once before any sibling is allocated. Common OpenMP and BLAS thread
+variables are pinned to `gurobi_threads` to reduce hidden oversubscription.
+The runner sends this value through
 `HGASP_SP_THREADS`, together with all values from the manifest's `sp` object
 through named `HGASP_SP_*` variables. These exact effective overrides are
-recorded in `run.json`. For comparable paper results, keep the same CPU model,
-worker count, Gurobi thread count, solver version, and limits across variants.
+recorded in `run.json`, along with requested/effective CPU affinity and the
+detected logical/physical/SMT topology. For comparable paper results, keep the
+same CPU model, worker count, Gurobi thread count, solver version, and limits
+across variants.
 
 The SP seed is independent from the HGA run seed. Declare both explicitly.
+
+The solver accepts `HGASP_SP_TRIGGER_OFFSET` for deterministic SP staggering.
+For trigger frequency `f`, the offset must satisfy `0 <= offset < f`; the
+first SP call occurs at iteration `f + offset`, followed by calls every `f`
+iterations. The direct-run default is `0`, which preserves the original
+single-run schedule. Matrix manifests default to `"deterministic"`: the runner
+derives a stable offset from the run ID and caps it using the iteration-limit
+remainder, so staggering does not reduce the scheduled SP-call count. Every
+resolved integer is stored in `config.resolved.json`.
+
+Each process lazily creates one Gurobi environment and reuses it across its SP
+calls. Retryable WLS/network acquisition failures rebuild that environment
+with bounded exponential backoff; ordinary model, numerical, and permanent
+license errors are not retried. Keep `sp.client_log_level=1` to retain WLS
+error evidence, and leave `sp.wls_token_duration_minutes=0` unless the study
+explicitly needs to override Gurobi's automatic token lifetime.
+
+`sp.time_limit_seconds` is accounted across environment acquisition, model
+construction, and optimization; the model receives only the remaining budget,
+and the client network timeout is capped to it. A blocking network call can
+still return slightly after that budget, so `limits.process_timeout_seconds`
+remains the outer safety guard. A positive `sp.work_limit` adds a deterministic
+Gurobi work-unit limit; zero leaves it disabled.
 
 `limits.time_seconds` and `limits.iterations` are algorithm inputs. A
 `time_seconds` value of `0` disables the global CPU-time limit; the iteration

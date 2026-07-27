@@ -58,6 +58,20 @@ struct NodeDepot{
 	double penalty;
 	std::set< int > emptyRoutes;//used to index all empty routes
 };
+
+// Compact, read-mostly view used by population diversity calculations.
+// Keeping these four integer fields together avoids repeatedly following the
+// Node -> Route -> NodeDepot pointer chain for the comparison individual.
+struct DiversityNodeCache {
+	int predecessor;
+	int successor;
+	int route;
+	int location;
+};
+static_assert(
+	sizeof(DiversityNodeCache) == 4 * sizeof(int),
+	"diversity cache must remain a compact four-integer record");
+
 class Individual{
 public:
 	//methods
@@ -107,11 +121,16 @@ public:
 	std::set<std::pair<double,int>> saturatLoc;// the first is degree, the second is the order of location.
 	std::set<std::pair<double,int>> saturatRoute;// the first is degree, the second is the order of route.
 private:
+	void invalidateDiversityCache() noexcept;
+	void ensureDiversityCache();
+
 	read_data *data;
 	int numV;
 	int numL;
 	int numC;
 
 	int *checkArray;
+	std::vector<DiversityNodeCache> diversityCache;
+	bool diversityCacheValid;
 };
 #endif /* INDI_H_ */

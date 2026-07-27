@@ -80,17 +80,26 @@
   },
   "resources": {
     "workers": 8,
-    "gurobi_threads": 1
+    "gurobi_threads": 1,
+    "allow_smt": false
   },
   "sp": {
     "trigger_frequency": 1000,
+    "trigger_offset": "deterministic",
     "time_limit_seconds": 5,
+    "work_limit": 0,
     "mip_gap": 0.001,
     "seed": 0,
     "max_pool_size": 25000,
     "output_flag": 0,
     "mip_focus": 1,
     "heuristics": 0.15,
+    "wls_token_duration_minutes": 0,
+    "wls_token_refresh": 0.9,
+    "client_log_level": 1,
+    "server_timeout_seconds": 5,
+    "environment_max_attempts": 3,
+    "environment_retry_base_milliseconds": 250,
     "representation_route_limit": true
   },
   "environment": {}
