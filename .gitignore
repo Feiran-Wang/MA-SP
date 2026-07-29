@@ -74,3 +74,12 @@ id_ed25519*
 *.tar
 *.tar.gz
 *.tgz
+
+# Reproducible Farham LRPTW inputs and the curated reference table.
+# Keep the rest of solutions/ and generated archives ignored.
+!solutions/
+solutions/*
+!solutions/set F/
+solutions/set F/*
+!solutions/set F/reference_results.csv
+!instances/set_F/Set1.zip

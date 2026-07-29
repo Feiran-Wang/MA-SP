@@ -2,7 +2,7 @@
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "$id": "https://hgasp.local/schemas/experiment.schema.json",
     "title": "HGA-SP experiment manifest",
-    "description": "A reproducible matrix of CLRP instances and random seeds.",
+    "description": "A reproducible matrix of CLRP or CLRP-TW instances and random seeds. Schema v2 manifests remain valid and are interpreted as problem_mode=clrp.",
     "type": "object",
     "additionalProperties": false,
     "required": [
@@ -18,7 +18,18 @@
     ],
     "properties": {
         "schema_version": {
-            "const": 2
+            "enum": [
+                2,
+                3
+            ]
+        },
+        "problem_mode": {
+            "type": "string",
+            "enum": [
+                "clrp",
+                "clrp-tw"
+            ],
+            "description": "Mathematical problem mode. Required by schema v3; schema v2 implies clrp."
         },
         "name": {
             "type": "string",
@@ -73,12 +84,100 @@
                             },
                             "best_known": {
                                 "type": "number",
+                                "minimum": 0,
                                 "default": 0
                             },
                             "is_optimal": {
                                 "type": "boolean",
                                 "default": false
+                            },
+                            "stop_at_reference": {
+                                "type": "boolean",
+                                "default": true,
+                                "description": "Whether a proven optimal reference should terminate the solver early. Set false only for functional tests that must reach later phases."
+                            },
+                            "reference": {
+                                "type": "object",
+                                "additionalProperties": false,
+                                "required": [
+                                    "status"
+                                ],
+                                "properties": {
+                                    "status": {
+                                        "type": "string",
+                                        "enum": [
+                                            "unknown",
+                                            "bks",
+                                            "optimal"
+                                        ]
+                                    },
+                                    "value": {
+                                        "type": [
+                                            "number",
+                                            "null"
+                                        ]
+                                    },
+                                    "lower_bound": {
+                                        "type": [
+                                            "number",
+                                            "null"
+                                        ]
+                                    },
+                                    "source": {
+                                        "type": "string",
+                                        "minLength": 1
+                                    },
+                                    "distance_policy": {
+                                        "type": "string",
+                                        "minLength": 1
+                                    }
+                                },
+                                "allOf": [
+                                    {
+                                        "if": {
+                                            "properties": {
+                                                "status": {
+                                                    "const": "unknown"
+                                                }
+                                            }
+                                        },
+                                        "then": {
+                                            "properties": {
+                                                "value": {
+                                                    "type": "null"
+                                                }
+                                            }
+                                        },
+                                        "else": {
+                                            "required": [
+                                                "value"
+                                            ],
+                                            "properties": {
+                                                "value": {
+                                                    "type": "number",
+                                                    "exclusiveMinimum": 0
+                                                }
+                                            }
+                                        }
+                                    }
+                                ]
                             }
+                        },
+                        "not": {
+                            "anyOf": [
+                                {
+                                    "required": [
+                                        "reference",
+                                        "best_known"
+                                    ]
+                                },
+                                {
+                                    "required": [
+                                        "reference",
+                                        "is_optimal"
+                                    ]
+                                }
+                            ]
                         }
                     }
                 ]
@@ -186,6 +285,133 @@
                     "type": "number",
                     "exclusiveMinimum": 0
                 },
+                "local_enabled": {
+                    "type": "boolean",
+                    "default": true
+                },
+                "local_trigger_frequency": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 2147483647,
+                    "default": 10000
+                },
+                "local_time_limit_seconds": {
+                    "type": "number",
+                    "exclusiveMinimum": 0,
+                    "default": 30
+                },
+                "adaptive_trigger_enabled": {
+                    "type": "boolean",
+                    "default": true
+                },
+                "adaptive_minimum_interval": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 2147483647,
+                    "default": 5000
+                },
+                "adaptive_local_new_columns": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 2147483647,
+                    "default": 250
+                },
+                "adaptive_local_stagnation": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 2147483647,
+                    "default": 5000
+                },
+                "adaptive_global_stagnation": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 2147483647,
+                    "default": 20000
+                },
+                "adaptive_utility_ema_weight": {
+                    "type": "number",
+                    "exclusiveMinimum": 0,
+                    "maximum": 1,
+                    "default": 0.25
+                },
+                "adaptive_high_utility_threshold": {
+                    "type": "number",
+                    "exclusiveMinimum": 0,
+                    "default": 0.001
+                },
+                "lp_dual_feedback_enabled": {
+                    "type": "boolean",
+                    "default": true
+                },
+                "lp_time_limit_seconds": {
+                    "type": "number",
+                    "exclusiveMinimum": 0,
+                    "default": 10
+                },
+                "persistent_lp_enabled": {
+                    "type": "boolean",
+                    "default": true
+                },
+                "solution_pool_size": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 1000,
+                    "default": 5
+                },
+                "solution_pool_gap": {
+                    "type": "number",
+                    "minimum": 0,
+                    "default": 0.02
+                },
+                "solution_pool_search_mode": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 2,
+                    "default": 2
+                },
+                "diverse_injection_count": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 1000,
+                    "default": 3
+                },
+                "adaptive_search_allocation_enabled": {
+                    "type": "boolean",
+                    "default": true
+                },
+                "adaptive_population_exploration": {
+                    "type": "number",
+                    "minimum": 0,
+                    "default": 0.25
+                },
+                "adaptive_population_diversity_weight": {
+                    "type": "number",
+                    "minimum": 0,
+                    "default": 0.1
+                },
+                "adaptive_population_column_weight": {
+                    "type": "number",
+                    "minimum": 0,
+                    "default": 0.05
+                },
+                "adaptive_search_ema_weight": {
+                    "type": "number",
+                    "exclusiveMinimum": 0,
+                    "maximum": 1,
+                    "default": 0.2
+                },
+                "adaptive_mutation_minimum_percent": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 100,
+                    "default": 5
+                },
+                "adaptive_mutation_maximum_percent": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 100,
+                    "default": 40
+                },
                 "work_limit": {
                     "type": "number",
                     "minimum": 0,
@@ -264,6 +490,11 @@
                 },
                 "representation_route_limit": {
                     "type": "boolean"
+                },
+                "require_success": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Fail the run unless this attempt logs both '[SP Result] status=' and '[SP Success]'. Intended for a dedicated functional smoke test."
                 }
             }
         },
@@ -277,6 +508,81 @@
                 "type": "string"
             },
             "description": "Non-secret environment overrides applied to every run."
+        },
+        "validation": {
+            "type": "object",
+            "additionalProperties": false,
+            "default": {
+                "required": false
+            },
+            "properties": {
+                "required": {
+                    "type": "boolean",
+                    "default": false
+                },
+                "absolute_tolerance": {
+                    "type": "number",
+                    "minimum": 0,
+                    "default": 1e-09
+                },
+                "relative_tolerance": {
+                    "type": "number",
+                    "minimum": 0,
+                    "default": 1e-09
+                }
+            }
         }
-    }
+    },
+    "allOf": [
+        {
+            "if": {
+                "properties": {
+                    "schema_version": {
+                        "const": 3
+                    }
+                }
+            },
+            "then": {
+                "required": [
+                    "problem_mode"
+                ]
+            },
+            "else": {
+                "properties": {
+                    "problem_mode": {
+                        "const": "clrp"
+                    }
+                }
+            }
+        },
+        {
+            "if": {
+                "properties": {
+                    "problem_mode": {
+                        "const": "clrp-tw"
+                    }
+                },
+                "required": [
+                    "problem_mode"
+                ]
+            },
+            "then": {
+                "required": [
+                    "validation"
+                ],
+                "properties": {
+                    "validation": {
+                        "required": [
+                            "required"
+                        ],
+                        "properties": {
+                            "required": {
+                                "const": true
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    ]
 }

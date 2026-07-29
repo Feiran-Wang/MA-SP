@@ -95,6 +95,140 @@ void testInvalidTriggerSchedule() {
         "trigger offset equal to the frequency was accepted");
 }
 
+void testAttemptTailLatchesEveryOutcome() {
+    SearchAttemptScheduler scheduler;
+    int iteration = 7;
+    int nonImprovingIterations = 3;
+
+    // A feasible child, a rejected child and a zero-child EAX batch all call
+    // the same completion operation.  The scheduler deliberately has no
+    // outcome parameter, so none of those paths can suppress the event tail.
+    scheduler.completeAttempt(
+        iteration, 10, 0);
+    scheduler.settleNonImprovement(
+        nonImprovingIterations, false);
+    scheduler.completeAttempt(
+        iteration, 10, 0);
+    scheduler.settleNonImprovement(
+        nonImprovingIterations, false);
+    require(
+        !scheduler.hasPendingSpTrigger(),
+        "SP was latched before the scheduled attempt");
+
+    scheduler.completeAttempt(
+        iteration, 10, 0);
+    scheduler.settleNonImprovement(
+        nonImprovingIterations, false);
+    require(iteration == 10, "attempt tail did not advance iteration");
+    require(
+        nonImprovingIterations == 6,
+        "attempt tail did not advance the non-improvement counter");
+    require(
+        scheduler.hasPendingSpTrigger(),
+        "scheduled SP was lost at the common attempt tail");
+
+    // A pending request survives later attempts until the orchestrator reaches
+    // its safe execution point and explicitly consumes it.
+    scheduler.completeAttempt(
+        iteration, 10, 0);
+    scheduler.settleNonImprovement(
+        nonImprovingIterations, false);
+    require(
+        scheduler.hasPendingSpTrigger(),
+        "an unconsumed SP request was not latched");
+    require(
+        scheduler.consumeSpTrigger(),
+        "the latched SP request could not be consumed");
+    require(
+        !scheduler.consumeSpTrigger(),
+        "one scheduled SP request was consumed more than once");
+}
+
+void testAttemptTailHonorsOffset() {
+    SearchAttemptScheduler scheduler;
+    int iteration = 11;
+    int nonImprovingIterations = 0;
+
+    scheduler.completeAttempt(
+        iteration, 10, 3);
+    scheduler.settleNonImprovement(
+        nonImprovingIterations, false);
+    require(
+        !scheduler.hasPendingSpTrigger(),
+        "offset trigger fired one attempt early");
+    scheduler.completeAttempt(
+        iteration, 10, 3);
+    scheduler.settleNonImprovement(
+        nonImprovingIterations, false);
+    require(
+        scheduler.consumeSpTrigger(),
+        "offset trigger was not latched at frequency plus offset");
+}
+
+void testAttemptTailSettlesOneUnifiedImprovementCounter() {
+    SearchAttemptScheduler scheduler;
+    int nonImprovingIterations = 8;
+
+    // The caller performs this comparison only after the final incumbent for
+    // the attempt is known. It therefore makes no difference whether HGA or
+    // a scheduled SP call produced the improvement.
+    scheduler.settleNonImprovement(
+        nonImprovingIterations, true);
+    require(
+        nonImprovingIterations == 0,
+        "a restart-best improvement did not reset stagnation");
+
+    scheduler.settleNonImprovement(
+        nonImprovingIterations, false);
+    require(
+        nonImprovingIterations == 1,
+        "a non-improving attempt was not counted exactly once");
+}
+
+void testSpOutcomePolicyIsFailClosed() {
+    require(
+        isSupportedSpTerminalStatus(SpStatus::optimal),
+        "OPTIMAL should be a supported SP outcome");
+    require(
+        isSupportedSpTerminalStatus(SpStatus::time_limit) &&
+            isSupportedSpTerminalStatus(SpStatus::work_limit) &&
+            isSupportedSpTerminalStatus(SpStatus::infeasible),
+        "the explicit nonfatal SP outcome set changed");
+    require(
+        mayContinueWithoutSpIncumbent(SpStatus::time_limit) &&
+            mayContinueWithoutSpIncumbent(SpStatus::work_limit) &&
+            mayContinueWithoutSpIncumbent(SpStatus::infeasible),
+        "the no-incumbent whitelist changed");
+    require(
+        !mayContinueWithoutSpIncumbent(SpStatus::optimal),
+        "OPTIMAL without an incumbent must be fatal");
+
+    const SpStatus fatalStatuses[] = {
+        SpStatus::not_run,
+        SpStatus::invalid_input,
+        SpStatus::error,
+        SpStatus::numeric,
+        SpStatus::memory_limit,
+        SpStatus::interrupted,
+        SpStatus::unbounded,
+        SpStatus::inf_or_unbounded,
+        SpStatus::cutoff,
+        SpStatus::iteration_limit,
+        SpStatus::suboptimal,
+        SpStatus::node_limit,
+        SpStatus::solution_limit,
+        SpStatus::user_objective_limit,
+    };
+    for (const SpStatus status : fatalStatuses) {
+        require(
+            !isSupportedSpTerminalStatus(status),
+            "an unexpected SP status was not classified as fatal");
+        require(
+            !mayContinueWithoutSpIncumbent(status),
+            "an unexpected no-incumbent status was allowed to continue");
+    }
+}
+
 void testEnvironmentOverride() {
     EnvironmentGuard frequencyGuard("HGASP_SP_TRIGGER_FREQUENCY");
     EnvironmentGuard offsetGuard("HGASP_SP_TRIGGER_OFFSET");
@@ -132,6 +266,10 @@ int main() {
         testDefaultTriggerSchedule();
         testOffsetTriggerSchedule();
         testInvalidTriggerSchedule();
+        testAttemptTailLatchesEveryOutcome();
+        testAttemptTailHonorsOffset();
+        testAttemptTailSettlesOneUnifiedImprovementCounter();
+        testSpOutcomePolicyIsFailClosed();
         testEnvironmentOverride();
         std::cout << "SP trigger policy tests passed" << std::endl;
         return 0;

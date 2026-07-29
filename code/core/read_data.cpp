@@ -9,6 +9,7 @@
 #include "read_data.h"
 #include "basic.h"
 #include "Individual.h"
+#include "InstanceLoader.h"
 #include <cerrno>
 #include <cmath>
 #include <cstdlib>
@@ -61,14 +62,47 @@ bool environmentBool(const char* name, const bool fallback) {
     return environmentInt(name, fallback ? 1 : 0, 0, 1) == 1;
 }
 
+double euclideanDistance(
+    const double fromX,
+    const double fromY,
+    const double toX,
+    const double toY) {
+    return std::sqrt(
+        (fromX - toX) * (fromX - toX) +
+        (fromY - toY) * (fromY - toY));
+}
+
+double applyRounding(
+    const double value,
+    const hgasp::NumericRounding rounding) {
+    if (rounding == hgasp::NumericRounding::CeilAfterScalingBy100) {
+        return std::ceil(value * 100.0);
+    }
+    if (rounding == hgasp::NumericRounding::Floor) {
+        // Coordinates in the published Farham files are integral.  The
+        // tiny guard prevents floating-point sqrt error from mapping an
+        // exact integer distance k to k-1, without affecting a genuinely
+        // non-integral distance on this coordinate scale.
+        return std::floor(value + 1.0e-12);
+    }
+    return value;
+}
+
 }  // namespace
 
 read_data::read_data() {
+    // Give embedded/test callers a valid process-CPU origin even when they do
+    // not go through main().  main() resets this immediately before the
+    // algorithm starts, so published search timings exclude instance parsing.
+    startTime = clock();
+    meetBestTime = 0.0;
     numV = 0;
     numL = 0;
     numC = 0;
     D = nullptr;
+    T = nullptr;
     distanceStorage = nullptr;
+    timeStorage = nullptr;
     x = nullptr;
     y = nullptr;
     demCus = nullptr;
@@ -79,6 +113,11 @@ read_data::read_data() {
 }
 
 void read_data::applyEnvironmentOverrides() {
+    const char* eaxMode = std::getenv("HGASP_EAX_PARENT_MODE");
+    if (eaxMode != nullptr && *eaxMode != '\0') {
+        eaxParentMode = hgasp::parseEaxParentMode(eaxMode);
+    }
+
     spTriggerFrequency = environmentInt(
         "HGASP_SP_TRIGGER_FREQUENCY",
         spTriggerFrequency,
@@ -100,6 +139,116 @@ void read_data::applyEnvironmentOverrides() {
         spTimeLimit,
         std::numeric_limits<double>::min(),
         std::numeric_limits<double>::max());
+    spLocalEnabled = environmentBool(
+        "HGASP_SP_LOCAL_ENABLED",
+        spLocalEnabled);
+    spLocalTriggerFrequency = environmentInt(
+        "HGASP_SP_LOCAL_TRIGGER_FREQUENCY",
+        spLocalTriggerFrequency,
+        1,
+        std::numeric_limits<int>::max());
+    spLocalTimeLimit = environmentDouble(
+        "HGASP_SP_LOCAL_TIME_LIMIT_SECONDS",
+        spLocalTimeLimit,
+        std::numeric_limits<double>::min(),
+        std::numeric_limits<double>::max());
+    spAdaptiveTriggerEnabled = environmentBool(
+        "HGASP_SP_ADAPTIVE_TRIGGER_ENABLED",
+        spAdaptiveTriggerEnabled);
+    spAdaptiveMinimumInterval = environmentInt(
+        "HGASP_SP_ADAPTIVE_MINIMUM_INTERVAL",
+        spAdaptiveMinimumInterval,
+        1,
+        std::numeric_limits<int>::max());
+    spAdaptiveLocalNewColumns = environmentInt(
+        "HGASP_SP_ADAPTIVE_LOCAL_NEW_COLUMNS",
+        spAdaptiveLocalNewColumns,
+        1,
+        std::numeric_limits<int>::max());
+    spAdaptiveLocalStagnation = environmentInt(
+        "HGASP_SP_ADAPTIVE_LOCAL_STAGNATION",
+        spAdaptiveLocalStagnation,
+        1,
+        std::numeric_limits<int>::max());
+    spAdaptiveGlobalStagnation = environmentInt(
+        "HGASP_SP_ADAPTIVE_GLOBAL_STAGNATION",
+        spAdaptiveGlobalStagnation,
+        spAdaptiveLocalStagnation,
+        std::numeric_limits<int>::max());
+    spAdaptiveUtilityEmaWeight = environmentDouble(
+        "HGASP_SP_ADAPTIVE_UTILITY_EMA_WEIGHT",
+        spAdaptiveUtilityEmaWeight,
+        std::numeric_limits<double>::min(),
+        1.0);
+    spAdaptiveHighUtilityThreshold = environmentDouble(
+        "HGASP_SP_ADAPTIVE_HIGH_UTILITY_THRESHOLD",
+        spAdaptiveHighUtilityThreshold,
+        std::numeric_limits<double>::min(),
+        std::numeric_limits<double>::max());
+    spLpDualFeedbackEnabled = environmentBool(
+        "HGASP_SP_LP_DUAL_FEEDBACK_ENABLED",
+        spLpDualFeedbackEnabled);
+    spLpTimeLimit = environmentDouble(
+        "HGASP_SP_LP_TIME_LIMIT_SECONDS",
+        spLpTimeLimit,
+        std::numeric_limits<double>::min(),
+        std::numeric_limits<double>::max());
+    spPersistentLpEnabled = environmentBool(
+        "HGASP_SP_PERSISTENT_LP_ENABLED",
+        spPersistentLpEnabled);
+    spSolutionPoolSize = environmentInt(
+        "HGASP_SP_SOLUTION_POOL_SIZE",
+        spSolutionPoolSize,
+        1,
+        1000);
+    spSolutionPoolGap = environmentDouble(
+        "HGASP_SP_SOLUTION_POOL_GAP",
+        spSolutionPoolGap,
+        0.0,
+        std::numeric_limits<double>::max());
+    spSolutionPoolSearchMode = environmentInt(
+        "HGASP_SP_SOLUTION_POOL_SEARCH_MODE",
+        spSolutionPoolSearchMode,
+        0,
+        2);
+    spDiverseInjectionCount = environmentInt(
+        "HGASP_SP_DIVERSE_INJECTION_COUNT",
+        spDiverseInjectionCount,
+        1,
+        spSolutionPoolSize);
+    adaptiveSearchAllocationEnabled = environmentBool(
+        "HGASP_ADAPTIVE_SEARCH_ALLOCATION_ENABLED",
+        adaptiveSearchAllocationEnabled);
+    adaptivePopulationExploration = environmentDouble(
+        "HGASP_ADAPTIVE_POPULATION_EXPLORATION",
+        adaptivePopulationExploration,
+        0.0,
+        std::numeric_limits<double>::max());
+    adaptivePopulationDiversityWeight = environmentDouble(
+        "HGASP_ADAPTIVE_POPULATION_DIVERSITY_WEIGHT",
+        adaptivePopulationDiversityWeight,
+        0.0,
+        std::numeric_limits<double>::max());
+    adaptivePopulationColumnWeight = environmentDouble(
+        "HGASP_ADAPTIVE_POPULATION_COLUMN_WEIGHT",
+        adaptivePopulationColumnWeight,
+        0.0,
+        std::numeric_limits<double>::max());
+    adaptiveSearchEmaWeight = environmentDouble(
+        "HGASP_ADAPTIVE_SEARCH_EMA_WEIGHT",
+        adaptiveSearchEmaWeight,
+        std::numeric_limits<double>::min(),
+        1.0);
+    adaptiveMutationMinimumPercent = environmentInt(
+        "HGASP_ADAPTIVE_MUTATION_MINIMUM_PERCENT",
+        adaptiveMutationMinimumPercent,
+        0,
+        100);
+    adaptiveMutationMaximumPercent = environmentInt(
+        "HGASP_ADAPTIVE_MUTATION_MAXIMUM_PERCENT",
+        adaptiveMutationMaximumPercent,
+        adaptiveMutationMinimumPercent,
+        100);
     spWorkLimit = environmentDouble(
         "HGASP_SP_WORK_LIMIT",
         spWorkLimit,
@@ -185,6 +334,8 @@ read_data::~read_data() {
 	dimTabu2.clear();
 	delete [] distanceStorage;
 	delete [] D;
+	delete [] timeStorage;
+	delete [] T;
 	delete [] x;
 	delete [] y;
 	delete [] demCus;
@@ -202,11 +353,18 @@ void read_data::define(){
 	dimTabu2.clear();
 
 	D = new double *[numC];
+	T = new double *[numC];
 	distanceStorage = new double[
+		static_cast<std::size_t>(numC) *
+		static_cast<std::size_t>(numC)]{};
+	timeStorage = new double[
 		static_cast<std::size_t>(numC) *
 		static_cast<std::size_t>(numC)]{};
 	for (int i = 0; i < numC; ++i) {
 		D[i] = distanceStorage +
+			static_cast<std::size_t>(i) *
+			static_cast<std::size_t>(numC);
+		T[i] = timeStorage +
 			static_cast<std::size_t>(i) *
 			static_cast<std::size_t>(numC);
 	}
@@ -226,167 +384,127 @@ void read_data::define(){
 		for (int j=0;j<numL;j++)
 			conflictLoc[i][j] = 0;
 	locIncCus = std::vector<std::set<int>>(numL);
-}
-void read_data::read_fun(std::string pathInstance,std::string pathDepotCon,std::string pathSolution, double bestDis, int isOptimal, int timeLimit,int iterLimit){
-	/****imput information*******/
-	this->timeLimit=timeLimit;
-	this->iterLimit=iterLimit;
-	this->bestDis = bestDis;
-	this->isOptimal=isOptimal;
-	this->pathSolution=pathSolution;
-	this->pathDepotCon=pathDepotCon;
-	this->pathInstance=pathInstance;
-	this->isFleetLimited = isFleetLimited;
-	/*********************************************************/
-	std::ifstream inputFile(pathInstance);
-
-	std::vector<std::string> temStr2=splitwithstr(pathInstance,'.');
-	int sss = (int)temStr2.size();
-//	std::cout<<temStr2[sss-1]<<std::endl;
-
-	if (inputFile.is_open()){
-		std::string instanceType;
-		std::string name1 = "dat";
-		std::string name2 = "json";
-		if (!temStr2[sss-1].compare(name1)){
-			inputFile >> numV;
-			inputFile >> numL;
-			numC = numV + numL;
-			define();
-			for (int i=numV; i<numC; i++){
-				inputFile >> x[i];
-				inputFile >> y[i];
-			}
-			for (int i=0; i< numV; i++){
-				inputFile >> x[i];
-				inputFile >> y[i];
-			}
-			inputFile >> vehCap;
-			for (int i=numV; i< numC; i++)
-				inputFile >> invLoc[i];
-			for (int i=0; i< numV; i++)
-				inputFile >> demCus[i];
-			for (int i=numV; i< numC; i++)
-				inputFile >> openCostLoc[i];
-			inputFile >> usingCostVeh;
-			inputFile >> realOrInteger;
-		}
-		else if (!temStr2[sss-1].compare(name2)){
-			numV = 0; numL = 0;
-			std::string var1;
-			inputFile >> var1;
-			while (var1 != "\"depots\":"){
-				inputFile >> var1;
-				if (var1 == "\"y\":"){
-					inputFile >> var1;
-					std::vector<std::string> temStr2=splitwithstr(var1,',');
-					numV++;
-				}
-			}
-			while (var1 != "\"name\":"){
-				inputFile >> var1;
-				if (var1 == "\"y\":"){
-					inputFile >> var1;
-					std::vector<std::string> temStr2=splitwithstr(var1,',');
-					numL++;
-				}
-			}
-			numC = numV + numL;
-			define();
-			inputFile.close();
-			//
-			std::ifstream inputFile(pathInstance);
-			inputFile >> var1;
-			numV = 0;
-			numL = 0;
-			while (var1 != "\"depots\":"){
-				inputFile >> var1;
-				if (var1 == "\"demand\":"){
-					inputFile >> var1;
-					std::vector<std::string> temStr2=splitwithstr(var1,',');
-					demCus[numV] = int(std::stoi(temStr2[0]));
-				}
-				if (var1 == "\"x\":"){
-					inputFile >> var1;
-					std::vector<std::string> temStr2=splitwithstr(var1,',');
-					x[numV] = std::stoi(temStr2[0]);
-				}
-				if (var1 == "\"y\":"){
-					inputFile >> var1;
-					std::vector<std::string> temStr2=splitwithstr(var1,',');
-					y[numV] = std::stoi(temStr2[0]);
-					numV++;
-				}
-			}
-			while (var1 != "\"name\":"){
-				inputFile >> var1;
-				if (var1 == "\"capacity\":"){
-					inputFile >> var1;
-					std::vector<std::string> temStr2=splitwithstr(var1,',');
-					invLoc[numL+numV] = std::stoi(temStr2[0]);
-				}
-				if (var1 == "\"costs\":"){
-					inputFile >> var1;
-					std::vector<std::string> temStr2=splitwithstr(var1,',');
-					openCostLoc[numL+numV] = std::stoi(temStr2[0]);
-				}
-				if (var1 == "\"x\":"){
-					inputFile >> var1;
-					std::vector<std::string> temStr2=splitwithstr(var1,',');
-					x[numV+numL] = std::stoi(temStr2[0]);
-				}
-				if (var1 == "\"y\":"){
-					inputFile >> var1;
-					std::vector<std::string> temStr2=splitwithstr(var1,',');
-					y[numV+numL] = std::stoi(temStr2[0]);
-					numL++;
-				}
-			}
-			while(1){
-				inputFile >> var1;
-				if (var1 == "\"vehicle_capacity\":"){
-					inputFile >> var1;
-					std::vector<std::string> temStr2=splitwithstr(var1,',');
-					vehCap = std::stoi(temStr2[0]);
-				}
-				if (var1 == "\"vehicle_costs\":"){
-					inputFile >> var1;
-					std::vector<std::string> temStr2=splitwithstr(var1,',');
-					usingCostVeh = std::stoi(temStr2[0]);
-					break;
-				}
-			}
-		}
-        else {
-            throw std::runtime_error(
-                "unsupported instance format: " + temStr2[sss - 1]);
-        }
+	readyTime.assign(
+		static_cast<std::size_t>(numV), 0.0);
+	dueTime.assign(
+		static_cast<std::size_t>(numV),
+		std::numeric_limits<double>::infinity());
+	serviceTime.assign(
+		static_cast<std::size_t>(numV), 0.0);
+	depotOpenTime.assign(
+		static_cast<std::size_t>(numL), 0.0);
+	depotCloseTime.assign(
+		static_cast<std::size_t>(numL),
+		std::numeric_limits<double>::infinity());
+	originalCustomerIds.resize(static_cast<std::size_t>(numV));
+	originalDepotIds.resize(static_cast<std::size_t>(numL));
+	for (int customer = 0; customer < numV; ++customer) {
+		originalCustomerIds[static_cast<std::size_t>(customer)] = customer;
 	}
-	else {
-        throw std::runtime_error(
-            "failed to open instance file: " + pathInstance);
-    }
-	inputFile.close();
-	//
+	for (int depot = 0; depot < numL; ++depot) {
+		originalDepotIds[static_cast<std::size_t>(depot)] = depot;
+	}
+}
+void read_data::read_fun(
+	std::string pathInstance,
+	std::string pathDepotCon,
+	std::string pathSolution,
+	double bestDis,
+	int isOptimal,
+	int timeLimit,
+	int iterLimit,
+	const hgasp::ProblemMode requestedMode) {
+	this->timeLimit = timeLimit;
+	this->iterLimit = iterLimit;
+	this->bestDis = bestDis;
+	this->isOptimal = isOptimal;
+	this->pathSolution = pathSolution;
+	this->pathDepotCon = pathDepotCon;
+	this->pathInstance = pathInstance;
+
+	const hgasp::ParsedInstance parsed =
+		hgasp::loadInstance(pathInstance);
+	hgasp::validateModeCompatibility(
+		parsed, requestedMode, pathInstance);
+
+	problemMode = requestedMode;
+	instanceFormat = parsed.format;
+	numV = static_cast<int>(parsed.customers.size());
+	numL = static_cast<int>(parsed.depots.size());
+	numC = numV + numL;
+	vehCap = parsed.vehicleCapacity;
+	usingCostVeh = parsed.vehicleFixedCost;
+	realOrInteger = parsed.legacyRealOrInteger;
+	define();
+
+	for (int customer = 0; customer < numV; ++customer) {
+		const hgasp::ParsedCustomer& source =
+			parsed.customers[static_cast<std::size_t>(customer)];
+		x[customer] = source.x;
+		y[customer] = source.y;
+		demCus[customer] = source.demand;
+		readyTime[static_cast<std::size_t>(customer)] =
+			source.readyTime;
+		dueTime[static_cast<std::size_t>(customer)] = source.dueTime;
+		serviceTime[static_cast<std::size_t>(customer)] =
+			source.serviceTime;
+		originalCustomerIds[static_cast<std::size_t>(customer)] =
+			source.originalId;
+	}
+	for (int depot = 0; depot < numL; ++depot) {
+		const hgasp::ParsedDepot& source =
+			parsed.depots[static_cast<std::size_t>(depot)];
+		const int node = numV + depot;
+		x[node] = source.x;
+		y[node] = source.y;
+		invLoc[node] = source.capacity;
+		openCostLoc[node] = source.openingCost;
+		depotOpenTime[static_cast<std::size_t>(depot)] =
+			source.openTime;
+		depotCloseTime[static_cast<std::size_t>(depot)] =
+			source.closeTime;
+		originalDepotIds[static_cast<std::size_t>(depot)] =
+			source.originalId;
+	}
+
 	readDepotConfigurations();
 
 
 	totalDemand=0;
 	maxDemand=0;
 	for (int i=0; i < numV; i++){
+		if (demCus[i] > vehCap) {
+			throw std::invalid_argument(
+				"instance is infeasible: customer " +
+				std::to_string(originalCustomerIds[
+					static_cast<std::size_t>(i)]) +
+				" demand exceeds vehicle capacity");
+		}
 		if (demCus[i] > maxDemand)
 			maxDemand=demCus[i];
 		totalDemand+=demCus[i];
 	}
+	if (totalDemand <= 0) {
+		throw std::invalid_argument(
+			"instance must contain a positive total customer demand");
+	}
+	long long aggregateDepotCapacity = 0;
+	for (int depot = 0; depot < numL; ++depot) {
+		aggregateDepotCapacity +=
+			static_cast<long long>(invLoc[numV + depot]);
+	}
+	if (aggregateDepotCapacity <
+		static_cast<long long>(totalDemand)) {
+		throw std::invalid_argument(
+			"instance is infeasible: aggregate depot capacity is smaller "
+			"than total customer demand");
+	}
 	normalizaPara = double(numV) / double(totalDemand);
 	avgDemand = double(totalDemand) / double(numV);
 	//
-	int numOfVeh;
 	maxVnum=0;
-	for (int i=0;i<numL;i++){
-		numOfVeh =ceil(1.2*totalDemand/vehCap)+5;
-		maxVnum += std::min((double)numOfVeh, 3*(double)ceil((double)invLoc[i+numV]/(double)vehCap));
-	}
+	for (int i=0;i<numL;i++)
+		maxVnum += Individual::representationRouteLimit(*this, i);
 	// process the initial data
 
 	isConstraintLoc = false;
@@ -397,28 +515,37 @@ void read_data::read_fun(std::string pathInstance,std::string pathDepotCon,std::
 		}
 	}
 	/***********************************************************************************************/
-	/*give the distance matrix*/
+	/* Build distinct objective-cost and travel-time matrices. */
 	maxDist=0;
 	for (int i=0;i<numV;i++){
 		for (int j=0;j<numV;j++){
-			D[i][j]=(sqrt((x[i]-x[j])*(x[i]-x[j])+(y[i]-y[j])*(y[i]-y[j])));
-			if (D[i][j]>maxDist)
-				maxDist=D[i][j];
+			const double distance =
+				euclideanDistance(x[i], y[i], x[j], y[j]);
+			D[i][j] = applyRounding(
+				distance, parsed.matrixPolicy.travelCostRounding);
+			T[i][j] = applyRounding(
+				distance, parsed.matrixPolicy.travelTimeRounding);
+			if (distance > maxDist)
+				maxDist=distance;
 		}
 	}
 	for (int i=0; i < numV;i++){
 		for (int j=numV; j<numC; j++){
-			D[i][j] = (sqrt((x[i]-x[j])*(x[i]-x[j])+(y[i]-y[j])*(y[i]-y[j])));
+			const double distance =
+				euclideanDistance(x[i], y[i], x[j], y[j]);
+			D[i][j] = applyRounding(
+				distance, parsed.matrixPolicy.travelCostRounding);
 			D[j][i] = D[i][j];
+			T[i][j] = applyRounding(
+				distance, parsed.matrixPolicy.travelTimeRounding);
+			T[j][i] = T[i][j];
 		}
 	}
 	for (int i=numV; i<numC; i++)
-		for (int j=numV; j<numC; j++)
+		for (int j=numV; j<numC; j++) {
 			D[i][j] = 0;
-	if (realOrInteger == 0)
-		for (int i=0;i<numC;i++)
-			for (int j=0;j<numC;j++)
-				D[i][j] = (int)(ceil(D[i][j]*100));
+			T[i][j] = 0;
+		}
 	// the most key element to decide promising depot configurations.
 	/****************************************************************************/
 
@@ -453,6 +580,38 @@ void read_data::read_fun(std::string pathInstance,std::string pathDepotCon,std::
 			}
 		}
 	}
+	if (problemMode == hgasp::ProblemMode::ClrpTw) {
+		// The legacy nearest-depot truncation is a search acceleration, not a
+		// valid domain reduction for LRPTW.  Keep every depot for which serving
+		// the customer alone is feasible.  With non-negative travel/service
+		// times, singleton feasibility is necessary for the customer to appear
+		// on any route from that depot.
+		for (int customer = 0; customer < numV; ++customer) {
+			customerToLoc[customer].clear();
+			for (int depot = 0; depot < numL; ++depot) {
+				const int depotNode = numV + depot;
+				const double arrival =
+					depotOpenTime[depot] + T[depotNode][customer];
+				const double serviceStart =
+					std::max(arrival, readyTime[customer]);
+				const double returnTime =
+					serviceStart + serviceTime[customer] +
+					T[customer][depotNode];
+				if (demCus[customer] <= vehCap &&
+					demCus[customer] <= invLoc[depotNode] &&
+					serviceStart <= dueTime[customer] + 1.0e-9 &&
+					returnTime <= depotCloseTime[depot] + 1.0e-9) {
+					customerToLoc[customer].push_back(depotNode);
+				}
+			}
+			if (customerToLoc[customer].empty()) {
+				throw std::runtime_error(
+					"CLRP-TW instance is infeasible: customer " +
+					std::to_string(originalCustomerIds[customer]) +
+					" cannot be served from any candidate depot");
+			}
+		}
+	}
 	//
 	std::vector < std::set < int > > setCorrelatedLocation = std::vector < std::set <int> >(numL);
 	for (int i=0; i < numL; i++){
@@ -473,8 +632,18 @@ void read_data::read_fun(std::string pathInstance,std::string pathDepotCon,std::
 	/****************************************************///
 
 
-	//decide whether used extra depot configurations
-	decideUsingDepotConfigurations();
+	// Depot-configuration preprocessing was designed around spatial/capacity
+	// proximity only.  In CLRP-TW mode it can discard the only temporally
+	// feasible assignment, so the extension deliberately uses the existing
+	// free-population path and lets the common objective choose depots.
+	if (problemMode == hgasp::ProblemMode::ClrpTw) {
+		no_capacity_location = true;
+		numLocConfiguration = 0;
+		LocConfigure.clear();
+		compactLocConfigure.clear();
+	} else {
+		decideUsingDepotConfigurations();
+	}
 
 }
 void read_data::decideUsingDepotConfigurations(){
@@ -544,15 +713,28 @@ std::vector<std::string>read_data:: splitwithstr(std::string &str,char ch){
 	  return res;
 }
 //
+void read_data::resetSearchCpuClock() noexcept {
+	startTime = clock();
+	meetBestTime = 0.0;
+}
+
+double read_data::elapsedCpuSeconds() const noexcept {
+	return static_cast<double>(clock() - startTime) /
+		static_cast<double>(CLOCKS_PER_SEC);
+}
+
+void read_data::recordGlobalIncumbent() noexcept {
+	meetBestTime = elapsedCpuSeconds();
+}
+
 bool read_data::stopCondition(double dis){
-	const double elapsedTime =
-		static_cast<double>(clock() - startTime) / CLOCKS_PER_SEC;
-	if (timeLimit > 0 && elapsedTime > timeLimit)
+	const double elapsedTime = elapsedCpuSeconds();
+	if (timeLimit > 0 && elapsedTime >= timeLimit)
 		return true;
-	if (iteration > iterLimit)
+	if (iteration >= iterLimit)
 		return true;
 	if (meetOptimal && bestDis > dis +Min){
-		timeToTarget = (double)clock()/(double)CLOCKS_PER_SEC;
+		timeToTarget = elapsedCpuSeconds();
 		meetOptimal = false;
 	}
 	if (std::abs(bestDis - dis) < 0.01){
@@ -721,8 +903,10 @@ void read_data::spanningTreeForLoc(){
 		for (int j=0;j<numV;j++)
 			low_cost[j]=D[l+numV][j];
 		int numVehicle = 0;
-		while(1){
+		int selectedCustomers = 0;
+		while(selectedCustomers < numV){
 			int totalVeh = 0;
+			bool madeProgress = false;
 			for (int i=0;i< numV;i++){
 				min_dis=Max;
 				v=-1;
@@ -735,6 +919,8 @@ void read_data::spanningTreeForLoc(){
 				if (v!=-1){
 					if (total_dem + demCus[v] >= invLoc[l+numV] || totalVeh >= vehCap)break;
 					check_cus[v] = 1;
+					selectedCustomers++;
+					madeProgress = true;
 					locIncCus[l].insert(v);
 					total_dis_loc += min_dis;
 					total_dem += demCus[v];
@@ -746,7 +932,14 @@ void read_data::spanningTreeForLoc(){
 				}
 			}
 			numVehicle++;
-			if (total_dem + demCus[v] >= invLoc[l+numV] || total_dem + demCus[v] == totalDemand)break;
+			// A depot with capacity above the total demand can exhaust every
+			// unchecked customer.  The legacy code then dereferenced demCus[-1]
+			// and could spin forever.  No progress means the finite Prim-style
+			// construction is complete (or the next customer cannot fit).
+			if (!madeProgress || v < 0 || selectedCustomers >= numV)
+				break;
+			if (total_dem + demCus[v] >= invLoc[l+numV])
+				break;
 			for (int j=0;j<numV;j++)
 				if (check_cus[j] == 1)
 					low_cost[j]=Max;
@@ -796,8 +989,13 @@ void read_data::tabuSearchFindCompactConfiguration(){
 	for (int i=0;i<numL;i++){
 		dem[i] = locRatio[i].first;
 	}
-	while(1){
+	const int maximumConstructionAttempts =
+		std::max(100, numL * 100);
+	int constructionAttempt = 0;
+	while(constructionAttempt++ < maximumConstructionAttempts){
 		for (int i=0;i<numL;i++)sol[i] = 0;
+		cusDem = 0;
+		obj = 0;
 		int seed = RandomInt(0, numL - 1);
 		int cumLoc = 0;
 		count = 0;
@@ -806,7 +1004,7 @@ void read_data::tabuSearchFindCompactConfiguration(){
 			sol[seed] = 1;
 			cusDem += invLoc[seed+numV];
 			obj += dem[seed];
-			if (cumLoc > totalDemand)break;
+				if (cumLoc >= totalDemand)break;
 			count = 0;
 			while(1){
 				seed = RandomInt(0, numL - 1);
@@ -828,10 +1026,38 @@ void read_data::tabuSearchFindCompactConfiguration(){
 			}
 			if (count > 1000)break;
 		}
-		if (count < 1000)break;
+			if (count < 1000)break;
+	}
+	if (constructionAttempt > maximumConstructionAttempts) {
+		// conflictLoc is only a preprocessing heuristic.  Falling back to all
+		// depots preserves the original CLRP domain and deterministically
+		// supplies a capacity-feasible starting configuration.
+		cusDem = 0;
+		obj = 0;
+		for (int depot = 0; depot < numL; ++depot) {
+			sol[depot] = 1;
+			cusDem += invLoc[depot + numV];
+			obj += dem[depot];
+		}
+		if (cusDem < totalDemand) {
+			throw std::runtime_error(
+				"depot-configuration preprocessing found insufficient "
+				"aggregate capacity");
+		}
 	}
 	int seed;
 	best_obj = obj;
+	// The tabu walk records configurations after its first move.  A
+	// capacity-tight construction can already be locally immovable, so retain
+	// the feasible seed before entering the neighborhood loop.
+	std::set<int> initialDepots;
+	for (int depot = 0; depot < numL; ++depot) {
+		if (sol[depot] == 1)
+			initialDepots.insert(depot + numV);
+	}
+	if (cusDem >= totalDemand && !initialDepots.empty()) {
+		LocConfigure.push_back({static_cast<double>(obj), initialDepots});
+	}
 	int can_node_1[100],can_node_2[100];
 	int can_tabu_node_1[100],can_tabu_node_2[100];
 	//
@@ -1165,6 +1391,7 @@ void read_data::constructedDepotConfigurations(){
 		sol.clear();
 		depot.clear();
 		coverVertex.clear();
+		orderDepots.clear();
 		for (int i=0;i<numL;i++)depot.push_back(i);
 		seed = RandomInt(0, numL - 1);
 		costDepotConf = locRatio[seed].first;
@@ -1207,18 +1434,23 @@ void read_data::constructedDepotConfigurations(){
 						isUsed = false;
 					break;
 				}
-				else{
-					while ((int)orderDepots.size() == 0){
-						coverRatio += 0.1;
+					else{
+						int relaxationSteps = 0;
+						while ((int)orderDepots.size() == 0 &&
+							   !priorityOrder.empty() &&
+							   relaxationSteps++ < 20){
+							coverRatio += 0.1;
 						for (int i=0;i<(int)priorityOrder.size();i++){
 						//	int cap = invLoc[priorityOrder[i].second + numV] + totalDem;
 						//	coverRatio = kParameter * ((double)cap / (double)totalDemand) + min_coverRatio;
 							if (priorityOrder[i].first > coverRatio)break;// discard these non-promising depots
 							else orderDepots.push_back({locRatio[priorityOrder[i].second].first,priorityOrder[i].second});
+							}
 						}
+						if (orderDepots.empty())
+							break;
 					}
 				}
-			}
 
 			sort(orderDepots.begin(),orderDepots.end());
 
@@ -1241,9 +1473,16 @@ void read_data::constructedDepotConfigurations(){
 			costDepotConf += locRatio[seed].first;
 			totalDem += invLoc[seed+numV];
 		}
-		if (orderDepots.size() == 0){
+		if (totalDem < totalDemand){
 			no_get ++;
 			iteration ++;
+			if (no_get > 1000) {
+				std::sort(LocConfigure.begin(), LocConfigure.end());
+				std::cout
+					<<"finishing construction depots configurations"
+					<<std::endl;
+				break;
+			}
 			continue;
 		}
 
@@ -1271,7 +1510,9 @@ void read_data::constructedDepotConfigurations(){
 		if (no_get > 1000){
 			std::sort(LocConfigure.begin(), LocConfigure.end());
 			std::cout<<"finishing construction depots configurations"<<std::endl;
-			std::cout<<"time consuming  "<<float((double)clock()/(double)CLOCKS_PER_SEC)<<std::endl;
+			std::cout
+				<< "instance preprocessing process CPU time  "
+				<< elapsedCpuSeconds() << std::endl;
 			break;
 		}
 		iteration++;
@@ -1285,16 +1526,28 @@ void read_data::readDepotConfigurations(){
 	std::string var;
 	if (pathDepotCon != "NULL"){
 		std::ifstream inputFile(pathDepotCon);
-		if (inputFile.is_open()){
-			int numDepotCon;
-			inputFile >> numDepotCon;
-			for (int i=0;i<numDepotCon;i++){
-				array.clear();
-				inputFile >> var;
-				while(var != "e"){
-					array.push_back(std::stoi(var) + numV);
-					inputFile >> var;
+			if (inputFile.is_open()){
+				int numDepotCon;
+				if (!(inputFile >> numDepotCon) || numDepotCon < 0) {
+					throw std::runtime_error(
+						"invalid depot configuration header: " +
+						pathDepotCon);
 				}
+				for (int i=0;i<numDepotCon;i++){
+					array.clear();
+					if (!(inputFile >> var)) {
+						throw std::runtime_error(
+							"unexpected end of depot configuration file: " +
+							pathDepotCon);
+					}
+					while(var != "e"){
+						array.push_back(std::stoi(var) + numV);
+						if (!(inputFile >> var)) {
+							throw std::runtime_error(
+								"missing 'e' terminator in depot "
+								"configuration file: " + pathDepotCon);
+						}
+					}
 				depotCon.push_back(array);
 			}
 		}

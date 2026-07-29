@@ -22,8 +22,11 @@ include(CTest)
 
 set(HGASP_INCLUDE_DIRS
   "${CMAKE_CURRENT_SOURCE_DIR}/code/core"
+  "${CMAKE_CURRENT_SOURCE_DIR}/code/evaluation"
+  "${CMAKE_CURRENT_SOURCE_DIR}/code/io"
   "${CMAKE_CURRENT_SOURCE_DIR}/code/models"
   "${CMAKE_CURRENT_SOURCE_DIR}/code/operators"
+  "${CMAKE_CURRENT_SOURCE_DIR}/code/problem"
   "${CMAKE_CURRENT_SOURCE_DIR}/code/solver"
   "${CMAKE_CURRENT_SOURCE_DIR}/code/utils"
 )
@@ -61,14 +64,21 @@ add_library(
     code/core/AlgorithmOrchestrator.cpp
     code/core/RouteGenerator.cpp
     code/core/read_data.cpp
+    code/evaluation/RouteEvaluator.cpp
+    code/io/FarhamLrptwParser.cpp
+    code/io/InstanceLoader.cpp
+    code/io/SetSDatParser.cpp
+    code/io/SetSJsonParser.cpp
     code/models/Individual.cpp
     code/models/RoutePool.cpp
     code/models/popManager.cpp
     code/operators/LS.cpp
+    code/operators/FeasibleInsertionFinder.cpp
     code/operators/RepairProcedure.cpp
     code/operators/crossover.cpp
     code/operators/initialsol.cpp
     code/operators/mutation.cpp
+    code/problem/ProblemMode.cpp
 )
 add_library(HGASP::engine ALIAS hgasp_engine)
 target_include_directories(hgasp_engine PUBLIC ${HGASP_INCLUDE_DIRS})
@@ -97,6 +107,32 @@ if(UNIX AND NOT APPLE)
 endif()
 
 if(BUILD_TESTING)
+  add_executable(
+    hgasp_run_logger_test
+    tests/unit/run_logger_test.cpp
+    code/utils/RunLogger.cpp
+  )
+  target_include_directories(
+    hgasp_run_logger_test
+    PRIVATE ${HGASP_INCLUDE_DIRS}
+  )
+  target_compile_features(hgasp_run_logger_test PRIVATE cxx_std_17)
+  target_link_libraries(
+    hgasp_run_logger_test
+    PRIVATE Threads::Threads
+  )
+  hgasp_enable_warnings(hgasp_run_logger_test)
+  add_test(
+    NAME logging.bounded_structured_logger
+    COMMAND hgasp_run_logger_test
+  )
+  set_tests_properties(
+    logging.bounded_structured_logger
+    PROPERTIES
+      LABELS "unit"
+      TIMEOUT 30
+  )
+
   add_test(NAME cli.help COMMAND hgasp --help)
   add_test(
     NAME cli.reject_negative_seed
@@ -148,6 +184,92 @@ if(BUILD_TESTING)
   )
 
   add_executable(
+    hgasp_route_evaluator_test
+    tests/unit/route_evaluator_test.cpp
+  )
+  target_link_libraries(
+    hgasp_route_evaluator_test
+    PRIVATE HGASP::engine
+  )
+  hgasp_enable_warnings(hgasp_route_evaluator_test)
+  add_test(
+    NAME route.mode_constraint_evaluator
+    COMMAND hgasp_route_evaluator_test
+  )
+
+  add_executable(
+    hgasp_tw_feasible_insertion_test
+    tests/unit/feasible_insertion_finder_test.cpp
+  )
+  target_link_libraries(
+    hgasp_tw_feasible_insertion_test
+    PRIVATE HGASP::engine
+  )
+  hgasp_enable_warnings(hgasp_tw_feasible_insertion_test)
+  add_test(
+    NAME route.tw_feasible_insertion
+    COMMAND hgasp_tw_feasible_insertion_test
+  )
+
+  add_executable(
+    hgasp_tw_mutation_test
+    tests/unit/tw_mutation_test.cpp
+  )
+  target_link_libraries(
+    hgasp_tw_mutation_test
+    PRIVATE HGASP::engine
+  )
+  hgasp_enable_warnings(hgasp_tw_mutation_test)
+  add_test(
+    NAME route.tw_mutation
+    COMMAND hgasp_tw_mutation_test
+  )
+
+  add_executable(
+    hgasp_tw_model_integrity_test
+    tests/unit/tw_model_integrity_test.cpp
+  )
+  target_link_libraries(
+    hgasp_tw_model_integrity_test
+    PRIVATE HGASP::engine
+  )
+  hgasp_enable_warnings(hgasp_tw_model_integrity_test)
+  add_test(
+    NAME route.tw_model_integrity
+    COMMAND hgasp_tw_model_integrity_test
+  )
+
+  add_executable(
+    hgasp_farham_benchmark_semantics_test
+    tests/unit/farham_benchmark_semantics_test.cpp
+  )
+  target_link_libraries(
+    hgasp_farham_benchmark_semantics_test
+    PRIVATE HGASP::engine
+  )
+  hgasp_enable_warnings(hgasp_farham_benchmark_semantics_test)
+  add_test(
+    NAME instance.farham_benchmark_semantics
+    COMMAND
+      hgasp_farham_benchmark_semantics_test
+      "${CMAKE_SOURCE_DIR}"
+  )
+
+  add_executable(
+    hgasp_instance_mode_parser_test
+    tests/unit/instance_mode_parser_test.cpp
+  )
+  target_link_libraries(
+    hgasp_instance_mode_parser_test
+    PRIVATE HGASP::engine
+  )
+  hgasp_enable_warnings(hgasp_instance_mode_parser_test)
+  add_test(
+    NAME instance.mode_and_parser
+    COMMAND hgasp_instance_mode_parser_test "${CMAKE_SOURCE_DIR}"
+  )
+
+  add_executable(
     hgasp_route_generator_memory_test
     tests/unit/route_generator_memory_test.cpp
   )
@@ -159,6 +281,196 @@ if(BUILD_TESTING)
   add_test(
     NAME route_generator.memory_layout
     COMMAND hgasp_route_generator_memory_test
+  )
+
+  add_executable(
+    hgasp_route_pool_admission_decoupling_test
+    tests/unit/route_pool_admission_decoupling_test.cpp
+  )
+  target_link_libraries(
+    hgasp_route_pool_admission_decoupling_test
+    PRIVATE HGASP::engine
+  )
+  hgasp_enable_warnings(
+    hgasp_route_pool_admission_decoupling_test
+  )
+  add_test(
+    NAME route_pool.admission_decoupling
+    COMMAND hgasp_route_pool_admission_decoupling_test
+  )
+
+  add_executable(hgasp_population_structural_duplicate_test
+    tests/unit/population_structural_duplicate_test.cpp
+  )
+  target_link_libraries(hgasp_population_structural_duplicate_test
+    PRIVATE HGASP::engine
+  )
+  hgasp_enable_warnings(
+    hgasp_population_structural_duplicate_test
+  )
+  add_test(
+    NAME population.structural_duplicate
+    COMMAND hgasp_population_structural_duplicate_test
+  )
+
+  add_executable(
+    hgasp_route_pool_column_dominance_test
+    tests/unit/route_pool_column_dominance_test.cpp
+  )
+  target_link_libraries(
+    hgasp_route_pool_column_dominance_test
+    PRIVATE HGASP::engine
+  )
+  hgasp_enable_warnings(
+    hgasp_route_pool_column_dominance_test
+  )
+  add_test(
+    NAME route_pool.column_dominance
+    COMMAND hgasp_route_pool_column_dominance_test
+  )
+
+  add_executable(
+    hgasp_route_pool_tiered_pruning_test
+    tests/unit/route_pool_tiered_pruning_test.cpp
+  )
+  target_link_libraries(
+    hgasp_route_pool_tiered_pruning_test
+    PRIVATE HGASP::engine
+  )
+  hgasp_enable_warnings(
+    hgasp_route_pool_tiered_pruning_test
+  )
+  add_test(
+    NAME route_pool.tiered_pruning
+    COMMAND hgasp_route_pool_tiered_pruning_test
+  )
+
+  add_executable(
+    hgasp_representation_route_bound_test
+    tests/unit/representation_route_bound_test.cpp
+  )
+  target_link_libraries(
+    hgasp_representation_route_bound_test
+    PRIVATE HGASP::engine
+  )
+  hgasp_enable_warnings(
+    hgasp_representation_route_bound_test
+  )
+  add_test(
+    NAME representation.safe_route_bound
+    COMMAND hgasp_representation_route_bound_test
+  )
+
+  add_executable(
+    hgasp_eax_parent_mode_test
+    tests/unit/eax_parent_mode_test.cpp
+  )
+  target_link_libraries(
+    hgasp_eax_parent_mode_test
+    PRIVATE HGASP::engine
+  )
+  hgasp_enable_warnings(hgasp_eax_parent_mode_test)
+  add_test(
+    NAME crossover.eax_parent_mode
+    COMMAND hgasp_eax_parent_mode_test
+  )
+
+  add_executable(
+    hgasp_configuration_local_sp_test
+    tests/unit/configuration_local_sp_test.cpp
+  )
+  target_link_libraries(
+    hgasp_configuration_local_sp_test
+    PRIVATE HGASP::engine
+  )
+  hgasp_enable_warnings(
+    hgasp_configuration_local_sp_test
+  )
+  add_test(
+    NAME sp.configuration_local
+    COMMAND hgasp_configuration_local_sp_test
+  )
+
+  add_executable(
+    hgasp_adaptive_sp_controller_test
+    tests/unit/adaptive_sp_controller_test.cpp
+  )
+  target_link_libraries(
+    hgasp_adaptive_sp_controller_test
+    PRIVATE HGASP::engine
+  )
+  hgasp_enable_warnings(
+    hgasp_adaptive_sp_controller_test
+  )
+  add_test(
+    NAME sp.adaptive_controller
+    COMMAND hgasp_adaptive_sp_controller_test
+  )
+
+  add_executable(
+    hgasp_route_pool_dual_feedback_test
+    tests/unit/route_pool_dual_feedback_test.cpp
+  )
+  target_link_libraries(
+    hgasp_route_pool_dual_feedback_test
+    PRIVATE HGASP::engine
+  )
+  hgasp_enable_warnings(
+    hgasp_route_pool_dual_feedback_test
+  )
+  add_test(
+    NAME route_pool.dual_feedback
+    COMMAND hgasp_route_pool_dual_feedback_test
+  )
+
+  add_executable(
+    hgasp_diverse_sp_solution_selector_test
+    tests/unit/diverse_sp_solution_selector_test.cpp
+  )
+  target_link_libraries(
+    hgasp_diverse_sp_solution_selector_test
+    PRIVATE HGASP::engine
+  )
+  hgasp_enable_warnings(
+    hgasp_diverse_sp_solution_selector_test
+  )
+  add_test(
+    NAME sp.diverse_solution_selector
+    COMMAND hgasp_diverse_sp_solution_selector_test
+  )
+
+  add_executable(
+    hgasp_adaptive_search_allocator_test
+    tests/unit/adaptive_search_allocator_test.cpp
+  )
+  target_link_libraries(
+    hgasp_adaptive_search_allocator_test
+    PRIVATE HGASP::engine
+  )
+  hgasp_enable_warnings(
+    hgasp_adaptive_search_allocator_test
+  )
+  add_test(
+    NAME search.adaptive_allocator
+    COMMAND hgasp_adaptive_search_allocator_test
+  )
+
+  add_executable(
+    hgasp_search_control_safety_test
+    tests/unit/search_control_safety_test.cpp
+  )
+  target_link_libraries(
+    hgasp_search_control_safety_test
+    PRIVATE HGASP::engine
+  )
+  hgasp_enable_warnings(hgasp_search_control_safety_test)
+  add_test(
+    NAME search.control_safety
+    COMMAND hgasp_search_control_safety_test
+  )
+  set_tests_properties(
+    search.control_safety
+    PROPERTIES TIMEOUT 10
   )
 
   add_executable(

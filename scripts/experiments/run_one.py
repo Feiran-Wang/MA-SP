@@ -28,13 +28,47 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 
-SCHEMA_VERSION = 2
+VALIDATION_DIR = Path(__file__).resolve().parents[1] / "validation"
+if str(VALIDATION_DIR) not in sys.path:
+    sys.path.insert(0, str(VALIDATION_DIR))
+
+import solution_validator  # noqa: E402
+
+
+SCHEMA_VERSION = 3
+LEGACY_SCHEMA_VERSION = 2
 SUCCESS_STATUS = "success"
+PROBLEM_MODES = frozenset(("clrp", "clrp-tw"))
 CPP_INT_MAX = 2_147_483_647
 SP_SEED_MAX = 2_000_000_000
 GUROBI_THREADS_MAX = 1024
 SP_OPTIONAL_DEFAULTS: Dict[str, Any] = {
+    "require_success": False,
     "work_limit": 0.0,
+    "local_enabled": True,
+    "local_trigger_frequency": 10000,
+    "local_time_limit_seconds": 30.0,
+    "adaptive_trigger_enabled": True,
+    "adaptive_minimum_interval": 5000,
+    "adaptive_local_new_columns": 250,
+    "adaptive_local_stagnation": 5000,
+    "adaptive_global_stagnation": 20000,
+    "adaptive_utility_ema_weight": 0.25,
+    "adaptive_high_utility_threshold": 1.0e-3,
+    "lp_dual_feedback_enabled": True,
+    "lp_time_limit_seconds": 10.0,
+    "persistent_lp_enabled": True,
+    "solution_pool_size": 5,
+    "solution_pool_gap": 0.02,
+    "solution_pool_search_mode": 2,
+    "diverse_injection_count": 3,
+    "adaptive_search_allocation_enabled": True,
+    "adaptive_population_exploration": 0.25,
+    "adaptive_population_diversity_weight": 0.10,
+    "adaptive_population_column_weight": 0.05,
+    "adaptive_search_ema_weight": 0.20,
+    "adaptive_mutation_minimum_percent": 5,
+    "adaptive_mutation_maximum_percent": 40,
     "wls_token_duration_minutes": 0,
     "wls_token_refresh": 0.9,
     "client_log_level": 1,
@@ -59,6 +93,30 @@ _MANAGED_ENVIRONMENT_KEYS = frozenset(
         "HGASP_SP_TRIGGER_FREQUENCY",
         "HGASP_SP_TRIGGER_OFFSET",
         "HGASP_SP_TIME_LIMIT_SECONDS",
+        "HGASP_SP_LOCAL_ENABLED",
+        "HGASP_SP_LOCAL_TRIGGER_FREQUENCY",
+        "HGASP_SP_LOCAL_TIME_LIMIT_SECONDS",
+        "HGASP_SP_ADAPTIVE_TRIGGER_ENABLED",
+        "HGASP_SP_ADAPTIVE_MINIMUM_INTERVAL",
+        "HGASP_SP_ADAPTIVE_LOCAL_NEW_COLUMNS",
+        "HGASP_SP_ADAPTIVE_LOCAL_STAGNATION",
+        "HGASP_SP_ADAPTIVE_GLOBAL_STAGNATION",
+        "HGASP_SP_ADAPTIVE_UTILITY_EMA_WEIGHT",
+        "HGASP_SP_ADAPTIVE_HIGH_UTILITY_THRESHOLD",
+        "HGASP_SP_LP_DUAL_FEEDBACK_ENABLED",
+        "HGASP_SP_LP_TIME_LIMIT_SECONDS",
+        "HGASP_SP_PERSISTENT_LP_ENABLED",
+        "HGASP_SP_SOLUTION_POOL_SIZE",
+        "HGASP_SP_SOLUTION_POOL_GAP",
+        "HGASP_SP_SOLUTION_POOL_SEARCH_MODE",
+        "HGASP_SP_DIVERSE_INJECTION_COUNT",
+        "HGASP_ADAPTIVE_SEARCH_ALLOCATION_ENABLED",
+        "HGASP_ADAPTIVE_POPULATION_EXPLORATION",
+        "HGASP_ADAPTIVE_POPULATION_DIVERSITY_WEIGHT",
+        "HGASP_ADAPTIVE_POPULATION_COLUMN_WEIGHT",
+        "HGASP_ADAPTIVE_SEARCH_EMA_WEIGHT",
+        "HGASP_ADAPTIVE_MUTATION_MINIMUM_PERCENT",
+        "HGASP_ADAPTIVE_MUTATION_MAXIMUM_PERCENT",
         "HGASP_SP_WORK_LIMIT",
         "HGASP_SP_MIP_GAP",
         "HGASP_SP_SEED",
@@ -75,11 +133,122 @@ _MANAGED_ENVIRONMENT_KEYS = frozenset(
         "HGASP_SP_REPRESENTATION_ROUTE_LIMIT",
         "HGASP_LOG_DIR",
         "HGASP_LOG_CONSOLE",
+        "HGASP_LOG_SEGMENT_BYTES",
+        "HGASP_LOG_BACKUPS",
+        "HGASP_LOG_MESSAGE_MAX_BYTES",
         "HGASP_SP_LOG_FILE",
     }
 )
 _ACTIVE_PROCESS_LOCK = threading.Lock()
-_ACTIVE_PROCESSES: set[subprocess.Popen] = set()
+_ACTIVE_PROCESSES: Dict[subprocess.Popen, "_ManagedProcess"] = {}
+SUPERVISOR_PATH = Path(__file__).with_name("process_supervisor.py")
+SUPERVISOR_HEARTBEAT_SECONDS = 5.0
+SUPERVISOR_TERM_GRACE_SECONDS = 2.0
+SUPERVISOR_KILL_GRACE_SECONDS = 2.0
+
+
+class CrossProcessFileLock:
+    """Non-blocking lock whose descriptor can be inherited by a supervisor."""
+
+    def __init__(self, path: Path, description: str) -> None:
+        self.path = path
+        self.description = description
+        self.fd: Optional[int] = None
+
+    def acquire(self) -> "CrossProcessFileLock":
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        flags = os.O_RDWR | os.O_CREAT
+        if hasattr(os, "O_CLOEXEC"):
+            flags |= os.O_CLOEXEC
+        descriptor = os.open(self.path, flags, 0o600)
+        try:
+            if os.name == "posix":
+                import fcntl
+
+                try:
+                    fcntl.flock(
+                        descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB
+                    )
+                except BlockingIOError as error:
+                    raise ExperimentError(
+                        f"{self.description} is already active: {self.path}"
+                    ) from error
+            else:
+                import msvcrt
+
+                try:
+                    os.lseek(descriptor, 0, os.SEEK_SET)
+                    msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
+                except OSError as error:
+                    raise ExperimentError(
+                        f"{self.description} is already active: {self.path}"
+                    ) from error
+            owner = (
+                json.dumps(
+                    {"pid": os.getpid(), "acquired_at": utc_now()},
+                    sort_keys=True,
+                )
+                + "\n"
+            ).encode("utf-8")
+            os.ftruncate(descriptor, 0)
+            os.write(descriptor, owner)
+            os.fsync(descriptor)
+            self.fd = descriptor
+            return self
+        except Exception:
+            os.close(descriptor)
+            raise
+
+    def close(self) -> None:
+        if self.fd is None:
+            return
+        descriptor = self.fd
+        self.fd = None
+        try:
+            if os.name == "posix":
+                import fcntl
+
+                fcntl.flock(descriptor, fcntl.LOCK_UN)
+            else:
+                import msvcrt
+
+                os.lseek(descriptor, 0, os.SEEK_SET)
+                msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
+        finally:
+            os.close(descriptor)
+
+    def __enter__(self) -> "CrossProcessFileLock":
+        return self.acquire()
+
+    def __exit__(self, _type: Any, _value: Any, _traceback: Any) -> None:
+        self.close()
+
+
+@dataclass
+class _ManagedProcess:
+    """Bookkeeping for one solver process and its isolated process group."""
+
+    process: subprocess.Popen
+    process_group_id: Optional[int]
+    wait_lock: threading.Lock
+    reaped: threading.Event
+    termination_lock: threading.Lock
+    termination_requested_at: Optional[float] = None
+    kill_requested: bool = False
+    cpu_user_seconds: Optional[float] = None
+    cpu_system_seconds: Optional[float] = None
+
+
+@dataclass
+class SignalState:
+    """First catchable termination signal observed by a runner."""
+
+    signum: Optional[int] = None
+    name: Optional[str] = None
+
+
+class _RunCancelled(RuntimeError):
+    """Internal control flow used when the matrix cancellation event is set."""
 
 
 class ExperimentError(RuntimeError):
@@ -152,6 +321,55 @@ def utc_now() -> str:
         .isoformat(timespec="milliseconds")
         .replace("+00:00", "Z")
     )
+
+
+@contextlib.contextmanager
+def cancellation_signal_handlers(
+    cancellation_event: threading.Event,
+):
+    """Translate SIGINT/SIGTERM/SIGHUP into cooperative runner cancellation.
+
+    Python dispatches signal handlers only in the main thread.  Worker threads
+    observe ``cancellation_event`` and terminate the process groups they own.
+    The handler deliberately does not raise asynchronously.  This both closes
+    the Popen-to-registration race and avoids blocking termination signals in
+    a child through an inherited pthread signal mask.  Repeated signals during
+    cleanup are coalesced so they cannot interrupt child reaping.
+    """
+
+    state = SignalState()
+    if threading.current_thread() is not threading.main_thread():
+        yield state
+        return
+
+    handled = tuple(
+        candidate
+        for candidate in (
+            signal.SIGINT,
+            signal.SIGTERM,
+            getattr(signal, "SIGHUP", None),
+        )
+        if candidate is not None
+    )
+    previous = {signum: signal.getsignal(signum) for signum in handled}
+
+    def request_cancellation(signum: int, _frame: Any) -> None:
+        cancellation_event.set()
+        if state.signum is not None:
+            return
+        state.signum = int(signum)
+        try:
+            state.name = signal.Signals(signum).name
+        except ValueError:
+            state.name = f"signal-{signum}"
+
+    try:
+        for signum in handled:
+            signal.signal(signum, request_cancellation)
+        yield state
+    finally:
+        for signum, handler in previous.items():
+            signal.signal(signum, handler)
 
 
 def json_bytes(value: Any) -> bytes:
@@ -579,12 +797,58 @@ def collect_platform_provenance(
     cpu_topology: Optional[CpuTopology] = None,
 ) -> Dict[str, Any]:
     topology = cpu_topology or detect_cpu_topology()
+    processor = platform.processor().strip()
+    if not processor and platform.system() == "Linux":
+        try:
+            cpuinfo_candidates: Dict[str, str] = {}
+            for line in Path("/proc/cpuinfo").read_text(
+                encoding="utf-8", errors="replace"
+            ).splitlines():
+                key, separator, value = line.partition(":")
+                normalized_key = key.strip().casefold()
+                if separator and normalized_key in {
+                    "model name",
+                    "hardware",
+                    "processor",
+                } and value.strip():
+                    cpuinfo_candidates.setdefault(
+                        normalized_key, value.strip()
+                    )
+            processor = (
+                cpuinfo_candidates.get("model name")
+                or cpuinfo_candidates.get("hardware")
+                or (
+                    cpuinfo_candidates.get("processor", "")
+                    if not cpuinfo_candidates.get("processor", "").isdigit()
+                    else ""
+                )
+            )
+        except OSError:
+            pass
+    processor = processor or "unknown"
+    machine = platform.machine() or "unknown"
+    hardware_identity = {
+        "machine": machine.casefold(),
+        "processor": " ".join(processor.casefold().split()),
+        "available_physical_core_count": topology.physical_core_count,
+        "threads_per_core": topology.threads_per_core,
+    }
+    hardware_payload = json.dumps(
+        hardware_identity,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    hardware_id = "sha256:" + hashlib.sha256(hardware_payload).hexdigest()
     result = {
         "system": platform.system(),
         "release": platform.release(),
         "version": platform.version(),
-        "machine": platform.machine(),
-        "processor": platform.processor() or None,
+        "machine": machine,
+        "processor": processor,
+        # Stable within an effective hardware topology. The unhashed inputs
+        # remain alongside the identifier so the fingerprint is auditable.
+        "hardware_id": hardware_id,
+        "hardware_identity": hardware_identity,
         "python_version": platform.python_version(),
         "python_implementation": platform.python_implementation(),
         "logical_cpu_count": os.cpu_count(),
@@ -610,10 +874,15 @@ def build_solver_command(config: Mapping[str, Any]) -> List[str]:
             str(int(config["seed"])),
         ]
     )
+    command.extend(
+        ["--problem-mode", str(config.get("problem_mode", "clrp"))]
+    )
     return command
 
 
-def _validate_run_config(config: Mapping[str, Any]) -> None:
+def _validate_run_config(
+    config: Mapping[str, Any], run_dir: Optional[Path] = None
+) -> None:
     binary = Path(str(config["binary"]))
     instance = Path(str(config["instance"]))
     if not binary.is_file():
@@ -625,6 +894,51 @@ def _validate_run_config(config: Mapping[str, Any]) -> None:
     depot = config.get("depot_config")
     if depot and not Path(str(depot)).is_file():
         raise ExperimentError(f"depot configuration does not exist: {depot}")
+    problem_mode = config.get("problem_mode", "clrp")
+    if problem_mode not in PROBLEM_MODES:
+        raise ExperimentError(
+            "problem_mode must be either 'clrp' or 'clrp-tw'"
+        )
+    solution = Path(str(config["solution"]))
+    expected_solution_json = solution.with_name("solution.json")
+    solution_json = Path(
+        str(config.get("solution_json") or expected_solution_json)
+    )
+    normalized_solution = solution.resolve()
+    normalized_solution_json = solution_json.resolve()
+    if normalized_solution == normalized_solution_json:
+        raise ExperimentError("solution and solution_json must be distinct paths")
+    if normalized_solution_json != expected_solution_json.resolve():
+        raise ExperimentError(
+            "solution_json must be the solution.txt sibling named solution.json"
+        )
+    protected_inputs = {
+        "binary": binary.resolve(),
+        "instance": instance.resolve(),
+    }
+    if depot:
+        protected_inputs["depot_config"] = Path(str(depot)).resolve()
+    for output_name, output_path in (
+        ("solution", normalized_solution),
+        ("solution_json", normalized_solution_json),
+    ):
+        for input_name, input_path in protected_inputs.items():
+            if output_path == input_path:
+                raise ExperimentError(
+                    f"{output_name} must not overwrite {input_name}"
+                )
+    if run_dir is not None:
+        normalized_run_dir = run_dir.resolve()
+        expected_solution = normalized_run_dir / "solution.txt"
+        expected_json = normalized_run_dir / "solution.json"
+        if normalized_solution != expected_solution:
+            raise ExperimentError(
+                "solution must be run_dir/solution.txt"
+            )
+        if normalized_solution_json != expected_json:
+            raise ExperimentError(
+                "solution_json must be run_dir/solution.json"
+            )
 
     limits = config.get("limits")
     resources = config.get("resources")
@@ -643,8 +957,23 @@ def _validate_run_config(config: Mapping[str, Any]) -> None:
         isinstance(best_known, bool)
         or not isinstance(best_known, (int, float))
         or not math.isfinite(float(best_known))
+        or float(best_known) < 0
     ):
-        raise ExperimentError("best_known must be a finite number")
+        raise ExperimentError("best_known must be finite and nonnegative")
+    is_optimal = config.get("is_optimal", False)
+    if not isinstance(is_optimal, bool):
+        raise ExperimentError("is_optimal must be boolean")
+    if is_optimal and float(best_known) <= 0:
+        raise ExperimentError(
+            "is_optimal=true requires a positive best_known value"
+        )
+    stop_at_reference = config.get("stop_at_reference", True)
+    if not isinstance(stop_at_reference, bool):
+        raise ExperimentError("stop_at_reference must be boolean")
+    if not stop_at_reference and is_optimal:
+        raise ExperimentError(
+            "is_optimal must be false when stop_at_reference=false"
+        )
     require_integer(
         limits.get("time_seconds"),
         "limits.time_seconds",
@@ -681,16 +1010,72 @@ def _validate_run_config(config: Mapping[str, Any]) -> None:
         )
     validate_environment_mapping(config.get("environment", {}))
     validate_sp_config(sp, allow_deterministic_trigger_offset=False)
+    validation = config.get("validation", {"required": False})
+    if not isinstance(validation, Mapping):
+        raise ExperimentError("validation must be an object")
+    unknown_validation = sorted(
+        set(validation)
+        - {"required", "absolute_tolerance", "relative_tolerance"}
+    )
+    if unknown_validation:
+        raise ExperimentError(
+            "validation contains unknown field(s): "
+            + ", ".join(unknown_validation)
+        )
+    if not isinstance(validation.get("required", False), bool):
+        raise ExperimentError("validation.required must be boolean")
+    if (
+        problem_mode == "clrp-tw"
+        and not validation.get("required", False)
+    ):
+        raise ExperimentError(
+            "clrp-tw runs must set validation.required=true"
+        )
+    for name, default in (
+        (
+            "absolute_tolerance",
+            solution_validator.DEFAULT_ABSOLUTE_TOLERANCE,
+        ),
+        (
+            "relative_tolerance",
+            solution_validator.DEFAULT_RELATIVE_TOLERANCE,
+        ),
+    ):
+        value = validation.get(name, default)
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(float(value))
+            or value < 0
+        ):
+            raise ExperimentError(
+                f"validation.{name} must be finite and nonnegative"
+            )
 
 
 def validate_sp_config(
     sp: Mapping[str, Any],
     allow_deterministic_trigger_offset: bool = True,
 ) -> None:
-    boolean_fields = ("representation_route_limit",)
-    for field in boolean_fields:
-        if not isinstance(sp.get(field), bool):
-            raise ExperimentError(f"sp.{field} must be boolean")
+    if not isinstance(sp.get("representation_route_limit"), bool):
+        raise ExperimentError("sp.representation_route_limit must be boolean")
+    for boolean_field in (
+        "local_enabled",
+        "adaptive_trigger_enabled",
+        "lp_dual_feedback_enabled",
+        "persistent_lp_enabled",
+        "adaptive_search_allocation_enabled",
+    ):
+        if not isinstance(
+            sp.get(boolean_field, SP_OPTIONAL_DEFAULTS[boolean_field]),
+            bool,
+        ):
+            raise ExperimentError(f"sp.{boolean_field} must be boolean")
+    if not isinstance(
+        sp.get("require_success", SP_OPTIONAL_DEFAULTS["require_success"]),
+        bool,
+    ):
+        raise ExperimentError("sp.require_success must be boolean")
 
     integer_ranges = {
         "trigger_frequency": (1, CPP_INT_MAX),
@@ -703,6 +1088,16 @@ def validate_sp_config(
         "server_timeout_seconds": (1, SP_SEED_MAX),
         "environment_max_attempts": (1, 10),
         "environment_retry_base_milliseconds": (0, 60000),
+        "local_trigger_frequency": (1, CPP_INT_MAX),
+        "adaptive_minimum_interval": (1, CPP_INT_MAX),
+        "adaptive_local_new_columns": (1, CPP_INT_MAX),
+        "adaptive_local_stagnation": (1, CPP_INT_MAX),
+        "adaptive_global_stagnation": (1, CPP_INT_MAX),
+        "solution_pool_size": (1, 1000),
+        "solution_pool_search_mode": (0, 2),
+        "diverse_injection_count": (1, 1000),
+        "adaptive_mutation_minimum_percent": (0, 100),
+        "adaptive_mutation_maximum_percent": (0, 100),
     }
     for field, (minimum, maximum) in integer_ranges.items():
         value = sp.get(field, SP_OPTIONAL_DEFAULTS.get(field))
@@ -738,6 +1133,15 @@ def validate_sp_config(
         "mip_gap": (0.0, 1.0, True),
         "heuristics": (0.0, 1.0, True),
         "wls_token_refresh": (0.0, 1.0, True),
+        "local_time_limit_seconds": (0.0, None, False),
+        "adaptive_utility_ema_weight": (0.0, 1.0, False),
+        "adaptive_high_utility_threshold": (0.0, None, False),
+        "lp_time_limit_seconds": (0.0, None, False),
+        "solution_pool_gap": (0.0, None, True),
+        "adaptive_population_exploration": (0.0, None, True),
+        "adaptive_population_diversity_weight": (0.0, None, True),
+        "adaptive_population_column_weight": (0.0, None, True),
+        "adaptive_search_ema_weight": (0.0, 1.0, False),
     }
     for field, (minimum, maximum, include_minimum) in numeric_ranges.items():
         value = sp.get(field, SP_OPTIONAL_DEFAULTS.get(field))
@@ -753,6 +1157,52 @@ def validate_sp_config(
             raise ExperimentError(
                 f"sp.{field} must be {lower_relation} {minimum}{upper}"
             )
+    if (
+        sp.get(
+            "adaptive_global_stagnation",
+            SP_OPTIONAL_DEFAULTS["adaptive_global_stagnation"],
+        )
+        < sp.get(
+            "adaptive_local_stagnation",
+            SP_OPTIONAL_DEFAULTS["adaptive_local_stagnation"],
+        )
+    ):
+        raise ExperimentError(
+            "sp.adaptive_global_stagnation must be at least "
+            "sp.adaptive_local_stagnation"
+        )
+    if (
+        sp.get(
+            "diverse_injection_count",
+            SP_OPTIONAL_DEFAULTS["diverse_injection_count"],
+        )
+        > sp.get(
+            "solution_pool_size",
+            SP_OPTIONAL_DEFAULTS["solution_pool_size"],
+        )
+    ):
+        raise ExperimentError(
+            "sp.diverse_injection_count must not exceed "
+            "sp.solution_pool_size"
+        )
+    if (
+        sp.get(
+            "adaptive_mutation_minimum_percent",
+            SP_OPTIONAL_DEFAULTS[
+                "adaptive_mutation_minimum_percent"
+            ],
+        )
+        > sp.get(
+            "adaptive_mutation_maximum_percent",
+            SP_OPTIONAL_DEFAULTS[
+                "adaptive_mutation_maximum_percent"
+            ],
+        )
+    ):
+        raise ExperimentError(
+            "sp.adaptive_mutation_minimum_percent must not exceed "
+            "sp.adaptive_mutation_maximum_percent"
+        )
 
 
 def _read_previous_run(path: Path) -> Optional[Dict[str, Any]]:
@@ -766,51 +1216,485 @@ def _read_previous_run(path: Path) -> Optional[Dict[str, Any]]:
     return value if isinstance(value, dict) else None
 
 
-def _terminate_process(process: subprocess.Popen) -> None:
-    if process.poll() is not None:
-        return
-    try:
-        if os.name == "posix":
-            os.killpg(process.pid, signal.SIGTERM)
-        else:
-            process.terminate()
-        process.wait(timeout=5)
-    except (OSError, subprocess.TimeoutExpired):
+def inspect_sp_success_logs(paths: Sequence[Path]) -> Dict[str, Any]:
+    """Require every observed SP result to have a success marker and no error."""
+
+    result_pattern = re.compile(rb"\[SP Result\] status=([A-Z_]+)")
+    failure_status_names = {
+        "ERROR",
+        "GUROBI_ERROR",
+        "INFEASIBLE",
+        "INVALID_SOLUTION",
+        "NO_SOLUTION",
+    }
+    checked_logs: List[str] = []
+    read_errors: List[str] = []
+    result_statuses: List[str] = []
+    success_count = 0
+
+    for path in paths:
+        checked_logs.append(str(path))
+        if not path.is_file():
+            continue
         try:
-            if os.name == "posix":
-                os.killpg(process.pid, signal.SIGKILL)
-            else:
-                process.kill()
-        except OSError:
-            pass
-        try:
-            process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            pass
+            content = path.read_bytes()
+            result_statuses.extend(
+                match.group(1).decode("ascii")
+                for match in result_pattern.finditer(content)
+            )
+            success_count += content.count(b"[SP Success]")
+        except OSError as error:
+            read_errors.append(f"{path}: {error}")
+
+    result_count = len(result_statuses)
+    failure_statuses = [
+        status for status in result_statuses if status in failure_status_names
+    ]
+    result_status_marker_found = result_count > 0
+    success_marker_found = success_count > 0
+    observed = (
+        result_count > 0
+        and success_count == result_count
+        and not failure_statuses
+        and not read_errors
+    )
+    return {
+        "result_status_marker_found": result_status_marker_found,
+        "success_marker_found": success_marker_found,
+        "result_count": result_count,
+        "success_count": success_count,
+        "result_statuses": result_statuses,
+        "failure_statuses": failure_statuses,
+        "checked": True,
+        "observed": observed,
+        "checked_logs": checked_logs,
+        "read_errors": read_errors,
+    }
 
 
-def _register_process(process: subprocess.Popen) -> None:
+def inspect_sp_success_attempt(
+    hgasp_log_path: Path,
+    stdout_path: Path,
+) -> Dict[str, Any]:
+    """Prefer canonical rotated HGA logs, using stdout only as a fallback."""
+
+    rotated: List[Tuple[int, Path]] = []
+    for candidate in hgasp_log_path.parent.glob(
+        f"{hgasp_log_path.name}.*"
+    ):
+        try:
+            index = int(candidate.suffix[1:])
+        except ValueError:
+            continue
+        rotated.append((index, candidate))
+    canonical_paths = [
+        path for _index, path in sorted(rotated, reverse=True)
+    ]
+    canonical_paths.append(hgasp_log_path)
+    evidence = inspect_sp_success_logs(canonical_paths)
+    if evidence["result_count"] > 0 or evidence["read_errors"]:
+        return evidence
+    # Fake/test solvers and failures before RunLogger initialization may only
+    # write stdout.  Do not scan it when canonical evidence exists, otherwise
+    # console teeing could double-count the same SP event.
+    return inspect_sp_success_logs((stdout_path,))
+
+
+def _managed_process(process: subprocess.Popen) -> Optional[_ManagedProcess]:
     with _ACTIVE_PROCESS_LOCK:
-        _ACTIVE_PROCESSES.add(process)
+        return _ACTIVE_PROCESSES.get(process)
+
+
+def _register_process(process: subprocess.Popen) -> _ManagedProcess:
+    process_group_id: Optional[int] = None
+    if os.name == "posix":
+        try:
+            process_group_id = os.getpgid(process.pid)
+        except OSError:
+            # ``start_new_session=True`` makes the child PID its PGID.  The
+            # fallback remains useful when a very short-lived test process
+            # exits between Popen and getpgid.
+            process_group_id = process.pid
+    managed = _ManagedProcess(
+        process=process,
+        process_group_id=process_group_id,
+        wait_lock=threading.Lock(),
+        reaped=threading.Event(),
+        termination_lock=threading.Lock(),
+    )
+    with _ACTIVE_PROCESS_LOCK:
+        if process in _ACTIVE_PROCESSES:
+            raise ExperimentError(
+                f"solver process {process.pid} was registered more than once"
+            )
+        _ACTIVE_PROCESSES[process] = managed
+    return managed
 
 
 def _unregister_process(process: subprocess.Popen) -> None:
     with _ACTIVE_PROCESS_LOCK:
-        _ACTIVE_PROCESSES.discard(process)
+        _ACTIVE_PROCESSES.pop(process, None)
 
 
 def active_process_count() -> int:
     with _ACTIVE_PROCESS_LOCK:
-        return sum(process.poll() is None for process in _ACTIVE_PROCESSES)
+        managed_processes = tuple(_ACTIVE_PROCESSES.values())
+    return sum(
+        not _managed_process_is_fully_stopped(managed)
+        for managed in managed_processes
+    )
 
 
-def terminate_active_processes() -> None:
-    """Terminate every solver process currently owned by this runner."""
+def _record_wait_status(
+    managed: _ManagedProcess,
+    status: int,
+    usage: Optional[Any],
+) -> int:
+    try:
+        return_code = os.waitstatus_to_exitcode(status)
+    except AttributeError:
+        if os.WIFSIGNALED(status):
+            return_code = -os.WTERMSIG(status)
+        else:
+            return_code = os.WEXITSTATUS(status)
+    managed.process.returncode = return_code
+    if usage is not None:
+        managed.cpu_user_seconds = float(usage.ru_utime)
+        managed.cpu_system_seconds = float(usage.ru_stime)
+    managed.reaped.set()
+    return return_code
+
+
+def _wait_for_registered_process(
+    process: subprocess.Popen,
+    timeout: Optional[float] = None,
+    cancellation_event: Optional[threading.Event] = None,
+) -> int:
+    """Wait for one exact child and capture CPU use without global deltas.
+
+    On POSIX, ``wait4(pid, ...)`` attributes user/system CPU to this child
+    (including its waited-for descendants) and therefore remains correct when
+    many solver processes run concurrently.  ``RUSAGE_CHILDREN`` deltas are
+    intentionally not used because they cannot be assigned safely per worker.
+    """
+
+    managed = _managed_process(process)
+    if managed is None:
+        raise ExperimentError(
+            f"solver process {process.pid} is not registered"
+        )
+    if managed.reaped.is_set():
+        assert process.returncode is not None
+        return int(process.returncode)
+
+    start = time.monotonic()
+    deadline = None if timeout is None else start + max(0.0, float(timeout))
+    lock_timeout = -1.0 if deadline is None else max(0.0, deadline - start)
+    acquired = managed.wait_lock.acquire(
+        timeout=lock_timeout
+    ) if lock_timeout >= 0 else managed.wait_lock.acquire()
+    if not acquired:
+        raise subprocess.TimeoutExpired(process.args, float(timeout or 0.0))
+    try:
+        if managed.reaped.is_set():
+            assert process.returncode is not None
+            return int(process.returncode)
+
+        if os.name == "posix" and hasattr(os, "wait4"):
+            while True:
+                if cancellation_event is not None and cancellation_event.is_set():
+                    raise _RunCancelled("solver run was cancelled")
+                try:
+                    pid, status, usage = os.wait4(process.pid, os.WNOHANG)
+                except ChildProcessError as error:
+                    if managed.reaped.is_set() and process.returncode is not None:
+                        return int(process.returncode)
+                    raise ExperimentError(
+                        f"solver process {process.pid} was reaped unexpectedly"
+                    ) from error
+                if pid == process.pid:
+                    return _record_wait_status(managed, status, usage)
+                now = time.monotonic()
+                if deadline is not None and now >= deadline:
+                    raise subprocess.TimeoutExpired(process.args, float(timeout))
+                wait_seconds = 0.05
+                if deadline is not None:
+                    wait_seconds = min(wait_seconds, max(0.0, deadline - now))
+                if cancellation_event is not None:
+                    cancellation_event.wait(wait_seconds)
+                else:
+                    time.sleep(wait_seconds)
+
+        # Portable fallback.  CPU attribution is unavailable here, but
+        # cancellation remains responsive.
+        while True:
+            if cancellation_event is not None and cancellation_event.is_set():
+                raise _RunCancelled("solver run was cancelled")
+            now = time.monotonic()
+            if deadline is not None and now >= deadline:
+                raise subprocess.TimeoutExpired(process.args, float(timeout))
+            wait_seconds = 0.05
+            if deadline is not None:
+                wait_seconds = min(wait_seconds, max(0.0, deadline - now))
+            try:
+                return_code = process.wait(timeout=wait_seconds)
+            except subprocess.TimeoutExpired:
+                continue
+            managed.reaped.set()
+            return int(return_code)
+    finally:
+        managed.wait_lock.release()
+
+
+def _signal_process_group(
+    managed: _ManagedProcess,
+    signum: int,
+) -> None:
+    try:
+        if os.name == "posix" and managed.process_group_id is not None:
+            os.killpg(managed.process_group_id, signum)
+        else:
+            managed.process.send_signal(signum)
+    except (OSError, ProcessLookupError):
+        pass
+
+
+def _request_process_group_termination(managed: _ManagedProcess) -> float:
+    """Send TERM once and return the shared grace-period start time."""
+
+    with managed.termination_lock:
+        if managed.termination_requested_at is None:
+            managed.termination_requested_at = time.monotonic()
+            _signal_process_group(managed, signal.SIGTERM)
+        return managed.termination_requested_at
+
+
+def _request_process_group_kill(managed: _ManagedProcess) -> None:
+    with managed.termination_lock:
+        if managed.kill_requested:
+            return
+        managed.kill_requested = True
+        _signal_process_group(
+            managed, getattr(signal, "SIGKILL", signal.SIGTERM)
+        )
+
+
+def _process_group_has_live_members(process_group_id: Optional[int]) -> bool:
+    if process_group_id is None or os.name != "posix":
+        return False
+
+    if sys.platform.startswith("linux"):
+        # killpg(..., 0) also reports zombie-only groups.  /proc lets cleanup
+        # distinguish those already-dead members from a descendant that is
+        # still executing after its group leader has been reaped.
+        proc_root = Path("/proc")
+        try:
+            entries = tuple(proc_root.iterdir())
+        except OSError:
+            return _process_group_may_exist(process_group_id)
+        inspection_incomplete = False
+        for entry in entries:
+            if not entry.name.isdigit():
+                continue
+            try:
+                content = (entry / "stat").read_text(encoding="utf-8")
+            except FileNotFoundError:
+                continue
+            except (OSError, UnicodeError):
+                inspection_incomplete = True
+                continue
+            closing_parenthesis = content.rfind(")")
+            if closing_parenthesis < 0:
+                inspection_incomplete = True
+                continue
+            fields = content[closing_parenthesis + 2 :].split()
+            if len(fields) < 3:
+                inspection_incomplete = True
+                continue
+            state = fields[0]
+            try:
+                member_group = int(fields[2])
+            except ValueError:
+                inspection_incomplete = True
+                continue
+            if member_group == process_group_id and state != "Z":
+                return True
+        # If any proc entry could not be inspected, absence was not proved.
+        # The signal-0 fallback is deliberately conservative: it may regard a
+        # zombie-only group as present, but it cannot silently declare a live
+        # solver descendant cleaned up.
+        return (
+            _process_group_may_exist(process_group_id)
+            if inspection_incomplete
+            else False
+        )
+
+    return _process_group_may_exist(process_group_id)
+
+
+def _process_group_may_exist(process_group_id: int) -> bool:
+    """Conservatively probe a process group when detailed inspection fails."""
+
+    try:
+        os.killpg(process_group_id, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        # Unknown probe failures do not prove that the group is gone.
+        return True
+    return True
+
+
+def _managed_process_is_fully_stopped(managed: _ManagedProcess) -> bool:
+    """Return true only after the leader is reaped and its group is quiescent."""
+
+    return (
+        managed.reaped.is_set()
+        and not _process_group_has_live_members(managed.process_group_id)
+    )
+
+
+def _wait_for_process_group_exit(
+    managed: _ManagedProcess,
+    deadline: float,
+) -> bool:
+    while _process_group_has_live_members(managed.process_group_id):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        time.sleep(min(0.05, remaining))
+    return True
+
+
+def _terminate_process(process: subprocess.Popen) -> bool:
+    """Terminate, converge, and reap one precisely registered process group.
+
+    The return value is an explicit cleanup confirmation.  Callers must retain
+    an unconfirmed registration and must not report a successful run.
+    """
+
+    managed = _managed_process(process)
+    if managed is None:
+        return True
+    if _managed_process_is_fully_stopped(managed):
+        return True
+    termination_started = _request_process_group_termination(managed)
+    term_deadline = termination_started + 5.0
+
+    if not managed.reaped.is_set():
+        try:
+            _wait_for_registered_process(
+                process,
+                timeout=max(0.0, term_deadline - time.monotonic()),
+            )
+        except subprocess.TimeoutExpired:
+            pass
+        except ExperimentError:
+            pass
+
+    group_exited = _wait_for_process_group_exit(managed, term_deadline)
+    if not group_exited:
+        _request_process_group_kill(managed)
+
+    kill_deadline = time.monotonic() + 5.0
+    if not managed.reaped.is_set():
+        try:
+            _wait_for_registered_process(
+                process,
+                timeout=max(0.0, kill_deadline - time.monotonic()),
+            )
+        except (subprocess.TimeoutExpired, ExperimentError):
+            pass
+    group_exited = _wait_for_process_group_exit(managed, kill_deadline)
+    return managed.reaped.is_set() and group_exited
+
+
+def process_cpu_times(
+    process: Optional[subprocess.Popen],
+) -> Tuple[Optional[float], Optional[float]]:
+    if process is None:
+        return None, None
+    managed = _managed_process(process)
+    if managed is None:
+        return None, None
+    return managed.cpu_user_seconds, managed.cpu_system_seconds
+
+
+def _try_reap_registered_process(managed: _ManagedProcess) -> None:
+    """Reap one leader without waiting for a lock held by its worker."""
+
+    if managed.reaped.is_set() or not managed.wait_lock.acquire(blocking=False):
+        return
+    try:
+        if managed.reaped.is_set():
+            return
+        if os.name == "posix" and hasattr(os, "wait4"):
+            try:
+                pid, status, usage = os.wait4(
+                    managed.process.pid, os.WNOHANG
+                )
+            except ChildProcessError:
+                return
+            if pid == managed.process.pid:
+                _record_wait_status(managed, status, usage)
+            return
+        return_code = managed.process.poll()
+        if return_code is not None:
+            managed.reaped.set()
+    finally:
+        managed.wait_lock.release()
+
+
+def _wait_managed_processes_until(
+    managed_processes: Sequence[_ManagedProcess],
+    deadline: float,
+) -> bool:
+    while True:
+        for managed in managed_processes:
+            _try_reap_registered_process(managed)
+        if all(
+            _managed_process_is_fully_stopped(managed)
+            for managed in managed_processes
+        ):
+            return True
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        time.sleep(min(0.05, remaining))
+
+
+def terminate_active_processes() -> bool:
+    """Terminate all owned groups with one shared TERM/KILL time budget."""
 
     with _ACTIVE_PROCESS_LOCK:
-        processes = list(_ACTIVE_PROCESSES)
-    for process in processes:
-        _terminate_process(process)
+        managed_processes = list(_ACTIVE_PROCESSES.values())
+    managed_processes = [
+        managed
+        for managed in managed_processes
+        if not _managed_process_is_fully_stopped(managed)
+    ]
+    # Signal the whole snapshot first.  With many workers this avoids waiting
+    # up to the grace period for one process while every other solver keeps
+    # consuming resources.
+    for managed in managed_processes:
+        _request_process_group_termination(managed)
+    term_deadline = time.monotonic() + 5.0
+    if not _wait_managed_processes_until(managed_processes, term_deadline):
+        remaining = [
+            managed
+            for managed in managed_processes
+            if not _managed_process_is_fully_stopped(managed)
+        ]
+        for managed in remaining:
+            _request_process_group_kill(managed)
+        cleanup_confirmed = _wait_managed_processes_until(
+            remaining, time.monotonic() + 5.0
+        )
+    else:
+        cleanup_confirmed = True
+    return cleanup_confirmed and active_process_count() == 0
 
 
 def _environment_overrides(config: Mapping[str, Any]) -> Dict[str, str]:
@@ -830,6 +1714,103 @@ def _environment_overrides(config: Mapping[str, Any]) -> Dict[str, str]:
             "HGASP_SP_TRIGGER_OFFSET": str(sp.get("trigger_offset", 0)),
             "HGASP_SP_TIME_LIMIT_SECONDS": format(
                 float(sp["time_limit_seconds"]), ".15g"
+            ),
+            "HGASP_SP_LOCAL_ENABLED": (
+                "1" if sp.get("local_enabled", True) else "0"
+            ),
+            "HGASP_SP_LOCAL_TRIGGER_FREQUENCY": str(
+                sp.get("local_trigger_frequency", 10000)
+            ),
+            "HGASP_SP_LOCAL_TIME_LIMIT_SECONDS": format(
+                float(sp.get("local_time_limit_seconds", 30.0)),
+                ".15g",
+            ),
+            "HGASP_SP_ADAPTIVE_TRIGGER_ENABLED": (
+                "1"
+                if sp.get("adaptive_trigger_enabled", True)
+                else "0"
+            ),
+            "HGASP_SP_ADAPTIVE_MINIMUM_INTERVAL": str(
+                sp.get("adaptive_minimum_interval", 5000)
+            ),
+            "HGASP_SP_ADAPTIVE_LOCAL_NEW_COLUMNS": str(
+                sp.get("adaptive_local_new_columns", 250)
+            ),
+            "HGASP_SP_ADAPTIVE_LOCAL_STAGNATION": str(
+                sp.get("adaptive_local_stagnation", 5000)
+            ),
+            "HGASP_SP_ADAPTIVE_GLOBAL_STAGNATION": str(
+                sp.get("adaptive_global_stagnation", 20000)
+            ),
+            "HGASP_SP_ADAPTIVE_UTILITY_EMA_WEIGHT": format(
+                float(sp.get("adaptive_utility_ema_weight", 0.25)),
+                ".15g",
+            ),
+            "HGASP_SP_ADAPTIVE_HIGH_UTILITY_THRESHOLD": format(
+                float(
+                    sp.get(
+                        "adaptive_high_utility_threshold",
+                        1.0e-3,
+                    )
+                ),
+                ".15g",
+            ),
+            "HGASP_SP_LP_DUAL_FEEDBACK_ENABLED": (
+                "1"
+                if sp.get("lp_dual_feedback_enabled", True)
+                else "0"
+            ),
+            "HGASP_SP_LP_TIME_LIMIT_SECONDS": format(
+                float(sp.get("lp_time_limit_seconds", 10.0)),
+                ".15g",
+            ),
+            "HGASP_SP_PERSISTENT_LP_ENABLED": (
+                "1" if sp.get("persistent_lp_enabled", True) else "0"
+            ),
+            "HGASP_SP_SOLUTION_POOL_SIZE": str(
+                sp.get("solution_pool_size", 5)
+            ),
+            "HGASP_SP_SOLUTION_POOL_GAP": format(
+                float(sp.get("solution_pool_gap", 0.02)), ".15g"
+            ),
+            "HGASP_SP_SOLUTION_POOL_SEARCH_MODE": str(
+                sp.get("solution_pool_search_mode", 2)
+            ),
+            "HGASP_SP_DIVERSE_INJECTION_COUNT": str(
+                sp.get("diverse_injection_count", 3)
+            ),
+            "HGASP_ADAPTIVE_SEARCH_ALLOCATION_ENABLED": (
+                "1"
+                if sp.get("adaptive_search_allocation_enabled", True)
+                else "0"
+            ),
+            "HGASP_ADAPTIVE_POPULATION_EXPLORATION": format(
+                float(sp.get("adaptive_population_exploration", 0.25)),
+                ".15g",
+            ),
+            "HGASP_ADAPTIVE_POPULATION_DIVERSITY_WEIGHT": format(
+                float(
+                    sp.get(
+                        "adaptive_population_diversity_weight", 0.10
+                    )
+                ),
+                ".15g",
+            ),
+            "HGASP_ADAPTIVE_POPULATION_COLUMN_WEIGHT": format(
+                float(
+                    sp.get("adaptive_population_column_weight", 0.05)
+                ),
+                ".15g",
+            ),
+            "HGASP_ADAPTIVE_SEARCH_EMA_WEIGHT": format(
+                float(sp.get("adaptive_search_ema_weight", 0.20)),
+                ".15g",
+            ),
+            "HGASP_ADAPTIVE_MUTATION_MINIMUM_PERCENT": str(
+                sp.get("adaptive_mutation_minimum_percent", 5)
+            ),
+            "HGASP_ADAPTIVE_MUTATION_MAXIMUM_PERCENT": str(
+                sp.get("adaptive_mutation_maximum_percent", 40)
             ),
             "HGASP_SP_WORK_LIMIT": format(
                 float(sp.get("work_limit", 0.0)), ".15g"
@@ -868,7 +1849,7 @@ def _environment_overrides(config: Mapping[str, Any]) -> Dict[str, str]:
     return overrides
 
 
-def execute_run(
+def _execute_run_locked(
     config: Dict[str, Any],
     run_dir: Path,
     repo_root: Path,
@@ -877,12 +1858,13 @@ def execute_run(
     cancellation_event: Optional[threading.Event] = None,
     cpu_affinity: Optional[Sequence[int]] = None,
     affinity_mode: str = "unbound",
+    inherited_lock_fds: Sequence[int] = (),
 ) -> Dict[str, Any]:
     """Execute one run and return its final run.json document."""
 
     if cancellation_event is not None and cancellation_event.is_set():
         raise ExperimentError("run cancelled before launch")
-    _validate_run_config(config)
+    _validate_run_config(config, run_dir)
     if shared_provenance is None:
         source_provenance: Dict[str, Any] = {
             "git": collect_git_provenance(repo_root),
@@ -900,6 +1882,16 @@ def execute_run(
     config_path = run_dir / "config.resolved.json"
     run_path = run_dir / "run.json"
     solution_path = Path(str(config["solution"]))
+    solution_json_path = Path(
+        str(config.get("solution_json") or solution_path.with_name("solution.json"))
+    )
+    validation_config = dict(config.get("validation", {"required": False}))
+    validation_required = bool(validation_config.get("required", False))
+    sp_success_required = bool(
+        config["sp"].get(
+            "require_success", SP_OPTIONAL_DEFAULTS["require_success"]
+        )
+    )
     config_payload = json_bytes(config)
     config_digest = sha256_bytes(config_payload)
     hashes: Dict[str, Optional[str]] = {
@@ -920,7 +1912,50 @@ def execute_run(
             previous_hashes.get(name) == digest
             for name, digest in hashes.items()
         )
-        has_solution = solution_path.is_file() and solution_path.stat().st_size > 0
+        expected_solution_hash = previous_hashes.get("solution_sha256")
+        has_solution = (
+            solution_path.is_file()
+            and solution_path.stat().st_size > 0
+            and isinstance(expected_solution_hash, str)
+            and sha256_file(solution_path) == expected_solution_hash
+        )
+        previous_has_solution_json = bool(
+            previous.get("solution_json_exists", False)
+        )
+        if validation_required or previous_has_solution_json:
+            expected_solution_json_hash = previous_hashes.get(
+                "solution_json_sha256"
+            )
+            has_solution = (
+                has_solution
+                and solution_json_path.is_file()
+                and solution_json_path.stat().st_size > 0
+                and isinstance(expected_solution_json_hash, str)
+                and sha256_file(solution_json_path)
+                == expected_solution_json_hash
+            )
+        if same_inputs and has_solution and validation_required:
+            try:
+                validation_result = solution_validator.validate_solution(
+                    Path(str(config["instance"])),
+                    solution_json_path,
+                    str(config.get("problem_mode", "clrp")),
+                    absolute_tolerance=float(
+                        validation_config.get(
+                            "absolute_tolerance",
+                            solution_validator.DEFAULT_ABSOLUTE_TOLERANCE,
+                        )
+                    ),
+                    relative_tolerance=float(
+                        validation_config.get(
+                            "relative_tolerance",
+                            solution_validator.DEFAULT_RELATIVE_TOLERANCE,
+                        )
+                    ),
+                )
+                has_solution = validation_result.valid
+            except solution_validator.ValidationInputError:
+                has_solution = False
         if same_inputs and has_solution and not force_successful:
             skipped = dict(previous)
             skipped["skipped"] = True
@@ -942,6 +1977,7 @@ def execute_run(
     stderr_path = attempt_log_dir / "stderr.log"
     hgasp_log_path = attempt_log_dir / "hgasp.log"
     gurobi_log_path = attempt_log_dir / "gurobi.log"
+    process_status_path = attempt_log_dir / "process.status.json"
     config_path.write_bytes(config_payload)
 
     command = build_solver_command(config)
@@ -949,7 +1985,10 @@ def execute_run(
     environment_overrides.update(
         {
             "HGASP_LOG_DIR": str(attempt_log_dir),
-            "HGASP_LOG_CONSOLE": "1",
+            "HGASP_LOG_CONSOLE": "0",
+            "HGASP_LOG_SEGMENT_BYTES": str(8 * 1024 * 1024),
+            "HGASP_LOG_BACKUPS": "2",
+            "HGASP_LOG_MESSAGE_MAX_BYTES": "4096",
             "HGASP_SP_LOG_FILE": str(gurobi_log_path),
         }
     )
@@ -972,14 +2011,32 @@ def execute_run(
         "experiment_name": config["experiment_name"],
         "run_id": config["run_id"],
         "instance_id": config["instance_id"],
+        "problem_mode": config.get("problem_mode", "clrp"),
+        "reference": config.get("reference"),
+        "best_known": float(config.get("best_known", 0.0)),
+        "is_optimal": bool(config.get("is_optimal", False)),
+        "stop_at_reference": bool(config.get("stop_at_reference", True)),
         "seed": int(config["seed"]),
         "attempt": attempt,
         "status": "running",
+        "process_status": "running",
         "started_at": utc_now(),
         "finished_at": None,
         "duration_seconds": None,
+        "duration_basis": "process_cpu",
+        "duration_scope": "whole_child_process",
+        "cpu_time_seconds": None,
+        "cpu_user_seconds": None,
+        "cpu_system_seconds": None,
+        "wall_duration_seconds": None,
         "return_code": None,
         "timed_out": False,
+        "supervisor_pid": None,
+        "supervisor_process_group_id": None,
+        "solver_pid": None,
+        "solver_process_group_id": None,
+        "solver_start_ticks": None,
+        "process_health": "launching",
         "command": command,
         "cwd": str(repo_root),
         "environment_overrides": environment_overrides,
@@ -988,17 +2045,43 @@ def execute_run(
             "requested_logical_cpu_ids": requested_affinity,
             "effective_logical_cpu_ids": None,
         },
+        "process_group_cleanup": {
+            "status": "not_started",
+            "confirmed": True,
+            "process_group_id": None,
+            "error": None,
+        },
         "files": {
             "resolved_config": str(config_path),
             "log_directory": str(attempt_log_dir),
             "stdout": str(stdout_path),
             "stderr": str(stderr_path),
             "hgasp": str(hgasp_log_path),
+            "events": str(attempt_log_dir / "events.jsonl"),
+            "algorithm_status": str(
+                attempt_log_dir / "algorithm.status.json"
+            ),
             "gurobi": str(gurobi_log_path),
+            "process_status": str(process_status_path),
             "solution": str(solution_path),
+            "solution_json": str(solution_json_path),
         },
         "solution_exists": False,
         "solution_size_bytes": 0,
+        "solution_json_exists": False,
+        "solution_json_size_bytes": 0,
+        "validation_required": validation_required,
+        "validation_status": "pending" if validation_required else "not_required",
+        "validation": None,
+        "sp_success_assertion": {
+            "required": sp_success_required,
+            "checked": False,
+            "observed": False,
+            "result_status_marker_found": False,
+            "success_marker_found": False,
+            "checked_logs": [],
+            "read_errors": [],
+        },
         "provenance": provenance,
         "error": None,
     }
@@ -1011,22 +2094,92 @@ def execute_run(
         pass
     except OSError as error:
         raise ExperimentError(f"cannot replace prior solution {solution_path}: {error}")
+    try:
+        solution_json_path.unlink()
+    except FileNotFoundError:
+        pass
+    except OSError as error:
+        raise ExperimentError(
+            f"cannot replace prior JSON solution {solution_json_path}: {error}"
+        )
 
-    start = time.monotonic()
+    wall_start = time.monotonic()
     process: Optional[subprocess.Popen] = None
+    control_read_fd: Optional[int] = None
+    control_write_fd: Optional[int] = None
     timeout = config["limits"].get("process_timeout_seconds")
     try:
         with stdout_path.open("wb") as stdout_stream, stderr_path.open(
             "wb"
         ) as stderr_stream:
             with inherited_cpu_affinity(cpu_affinity) as launcher_affinity:
+                launch_command = command
+                popen_options: Dict[str, Any] = {
+                    "cwd": str(repo_root),
+                    "env": process_environment,
+                    "stdout": stdout_stream,
+                    "stderr": stderr_stream,
+                    "start_new_session": (os.name == "posix"),
+                }
+                if os.name == "posix":
+                    if hasattr(os, "pipe2") and hasattr(os, "O_CLOEXEC"):
+                        control_read_fd, control_write_fd = os.pipe2(
+                            os.O_CLOEXEC
+                        )
+                    else:
+                        control_read_fd, control_write_fd = os.pipe()
+                        os.set_inheritable(control_read_fd, False)
+                        os.set_inheritable(control_write_fd, False)
+                    launch_command = [
+                        sys.executable,
+                        str(SUPERVISOR_PATH),
+                        "--control-fd",
+                        str(control_read_fd),
+                        "--status-file",
+                        str(process_status_path),
+                        "--heartbeat-seconds",
+                        format(SUPERVISOR_HEARTBEAT_SECONDS, ".15g"),
+                        "--term-grace-seconds",
+                        format(SUPERVISOR_TERM_GRACE_SECONDS, ".15g"),
+                        "--kill-grace-seconds",
+                        format(SUPERVISOR_KILL_GRACE_SECONDS, ".15g"),
+                        "--",
+                        *command,
+                    ]
+                    pass_fds = tuple(
+                        sorted(
+                            {
+                                int(control_read_fd),
+                                *(
+                                    int(fd)
+                                    for fd in inherited_lock_fds
+                                    if int(fd) >= 0
+                                ),
+                            }
+                        )
+                    )
+                    popen_options["pass_fds"] = pass_fds
                 process = subprocess.Popen(
-                    command,
-                    cwd=str(repo_root),
-                    env=process_environment,
-                    stdout=stdout_stream,
-                    stderr=stderr_stream,
-                    start_new_session=(os.name == "posix"),
+                    launch_command,
+                    **popen_options,
+                )
+                if control_read_fd is not None:
+                    os.close(control_read_fd)
+                    control_read_fd = None
+                # Register immediately after Popen, before affinity inspection
+                # or any operation that could race cancellation.  Signal
+                # handlers only set the shared event, so they cannot unwind
+                # this small critical section.
+                managed = _register_process(process)
+                result["process_group_cleanup"] = {
+                    "status": "pending",
+                    "confirmed": False,
+                    "process_group_id": managed.process_group_id,
+                    "error": None,
+                }
+                result["supervisor_pid"] = process.pid
+                result["supervisor_process_group_id"] = (
+                    managed.process_group_id
                 )
                 effective_affinity = launcher_affinity
                 if hasattr(os, "sched_getaffinity"):
@@ -1042,17 +2195,34 @@ def execute_run(
                 result["cpu_affinity"]["effective_logical_cpu_ids"] = list(
                     effective_affinity
                 )
-            _register_process(process)
+                # Persist the live supervisor identity immediately.  A hard
+                # parent death after this point leaves an actionable record,
+                # while the control-pipe EOF independently stops the solver.
+                write_json(run_path, result)
             try:
                 if cancellation_event is not None and cancellation_event.is_set():
+                    if control_write_fd is not None:
+                        os.close(control_write_fd)
+                        control_write_fd = None
                     _terminate_process(process)
                     result["return_code"] = process.returncode
                 else:
-                    result["return_code"] = process.wait(
-                        timeout=float(timeout) if timeout is not None else None
+                    result["return_code"] = _wait_for_registered_process(
+                        process,
+                        timeout=float(timeout) if timeout is not None else None,
+                        cancellation_event=cancellation_event,
                     )
+            except _RunCancelled:
+                if control_write_fd is not None:
+                    os.close(control_write_fd)
+                    control_write_fd = None
+                _terminate_process(process)
+                result["return_code"] = process.returncode
             except subprocess.TimeoutExpired:
                 result["timed_out"] = True
+                if control_write_fd is not None:
+                    os.close(control_write_fd)
+                    control_write_fd = None
                 _terminate_process(process)
                 result["return_code"] = process.returncode
     except KeyboardInterrupt:
@@ -1060,40 +2230,324 @@ def execute_run(
             _terminate_process(process)
             result["return_code"] = process.returncode
         result["status"] = "interrupted"
+        result["process_status"] = "interrupted"
         result["error"] = "interrupted by user"
         raise
     except OSError as error:
         result["status"] = "launch_error"
+        result["process_status"] = "launch_error"
         result["error"] = str(error)
     finally:
+        for descriptor_name in ("control_read_fd", "control_write_fd"):
+            descriptor = (
+                control_read_fd
+                if descriptor_name == "control_read_fd"
+                else control_write_fd
+            )
+            if descriptor is not None:
+                try:
+                    os.close(descriptor)
+                except OSError:
+                    pass
+                if descriptor_name == "control_read_fd":
+                    control_read_fd = None
+                else:
+                    control_write_fd = None
+        cleanup_confirmed = True
         if process is not None:
+            managed = _managed_process(process)
+            if managed is not None:
+                if not _managed_process_is_fully_stopped(managed):
+                    cleanup_confirmed = _terminate_process(process)
+                    result["return_code"] = process.returncode
+                else:
+                    cleanup_confirmed = True
+                if cleanup_confirmed:
+                    result["process_group_cleanup"] = {
+                        "status": "complete",
+                        "confirmed": True,
+                        "process_group_id": managed.process_group_id,
+                        "error": None,
+                    }
+                else:
+                    cleanup_error = (
+                        "solver process-group cleanup could not be confirmed "
+                        "after TERM and KILL"
+                    )
+                    result["process_group_cleanup"] = {
+                        "status": "failed",
+                        "confirmed": False,
+                        "process_group_id": managed.process_group_id,
+                        "error": cleanup_error,
+                    }
+                    if result["status"] == "running":
+                        result["status"] = "failed"
+                        result["process_status"] = "cleanup_failed"
+                        result["error"] = cleanup_error
+            else:
+                cleanup_confirmed = False
+                cleanup_error = (
+                    "solver process-group cleanup could not be confirmed "
+                    "because its registration is missing"
+                )
+                result["process_group_cleanup"] = {
+                    "status": "failed",
+                    "confirmed": False,
+                    "process_group_id": None,
+                    "error": cleanup_error,
+                }
+                if result["status"] == "running":
+                    result["status"] = "failed"
+                    result["process_status"] = "cleanup_failed"
+                    result["error"] = cleanup_error
+        status_document = _read_previous_run(process_status_path)
+        if status_document is not None:
+            result["solver_pid"] = status_document.get("solver_pid")
+            result["solver_process_group_id"] = status_document.get(
+                "solver_process_group_id"
+            )
+            result["solver_start_ticks"] = status_document.get(
+                "solver_start_ticks"
+            )
+            result["process_health"] = status_document.get(
+                "health", result["process_health"]
+            )
+            solver_group_id = status_document.get(
+                "solver_process_group_id"
+            )
+            if (
+                isinstance(solver_group_id, int)
+                and result["process_group_cleanup"]["status"] != "not_started"
+            ):
+                result["process_group_cleanup"][
+                    "process_group_id"
+                ] = solver_group_id
+        cpu_user_seconds, cpu_system_seconds = process_cpu_times(process)
+        if status_document is not None:
+            solver_cpu_user = status_document.get("cpu_user_seconds")
+            solver_cpu_system = status_document.get("cpu_system_seconds")
+            if isinstance(solver_cpu_user, (int, float)) and isinstance(
+                solver_cpu_system, (int, float)
+            ):
+                cpu_user_seconds = float(solver_cpu_user)
+                cpu_system_seconds = float(solver_cpu_system)
+        if process is not None and cleanup_confirmed:
             _unregister_process(process)
         result["finished_at"] = utc_now()
-        result["duration_seconds"] = round(time.monotonic() - start, 6)
+        wall_duration_seconds = round(time.monotonic() - wall_start, 6)
+        result["wall_duration_seconds"] = wall_duration_seconds
+        if cpu_user_seconds is not None and cpu_system_seconds is not None:
+            result["cpu_user_seconds"] = round(cpu_user_seconds, 6)
+            result["cpu_system_seconds"] = round(cpu_system_seconds, 6)
+            result["cpu_time_seconds"] = round(
+                cpu_user_seconds + cpu_system_seconds, 6
+            )
+            result["duration_seconds"] = result["cpu_time_seconds"]
+        else:
+            # wait4 is unavailable on some non-POSIX platforms.  Preserve a
+            # usable duration while making the fallback explicit in metadata.
+            result["duration_basis"] = "wall_clock_fallback"
+            result["duration_seconds"] = wall_duration_seconds
         result["solution_exists"] = solution_path.is_file()
         if result["solution_exists"]:
             result["solution_size_bytes"] = solution_path.stat().st_size
+            if result["solution_size_bytes"] > 0:
+                hashes["solution_sha256"] = sha256_file(solution_path)
+        result["solution_json_exists"] = solution_json_path.is_file()
+        if result["solution_json_exists"]:
+            result["solution_json_size_bytes"] = solution_json_path.stat().st_size
+            if result["solution_json_size_bytes"] > 0:
+                hashes["solution_json_sha256"] = sha256_file(
+                    solution_json_path
+                )
+        if sp_success_required:
+            sp_success_evidence = inspect_sp_success_attempt(
+                hgasp_log_path, stdout_path
+            )
+            result["sp_success_assertion"] = {
+                "required": True,
+                **sp_success_evidence,
+            }
+        else:
+            sp_success_evidence = result["sp_success_assertion"]
 
         if result["status"] == "running":
             if cancellation_event is not None and cancellation_event.is_set():
                 result["status"] = "interrupted"
+                result["process_status"] = "interrupted"
                 result["error"] = "cancelled by matrix runner"
             elif result["timed_out"]:
                 result["status"] = "timed_out"
+                result["process_status"] = "timed_out"
                 result["error"] = "external process timeout expired"
             elif result["return_code"] != 0:
                 result["status"] = "failed"
+                result["process_status"] = "failed"
                 result["error"] = (
                     f"solver exited with return code {result['return_code']}"
                 )
+            elif (
+                sp_success_required
+                and not sp_success_evidence["observed"]
+            ):
+                missing = []
+                if not sp_success_evidence["result_status_marker_found"]:
+                    missing.append("'[SP Result] status='")
+                if not sp_success_evidence["success_marker_found"]:
+                    missing.append("'[SP Success]'")
+                detail = ""
+                if sp_success_evidence["read_errors"]:
+                    detail = "; log read errors: " + "; ".join(
+                        sp_success_evidence["read_errors"]
+                    )
+                result["status"] = "failed"
+                result["process_status"] = "sp_assertion_failed"
+                strict_detail = ""
+                if sp_success_evidence.get("failure_statuses"):
+                    strict_detail += (
+                        "; failing SP statuses: "
+                        + ", ".join(sp_success_evidence["failure_statuses"])
+                    )
+                result_count = sp_success_evidence.get("result_count", 0)
+                success_count = sp_success_evidence.get("success_count", 0)
+                if result_count != success_count:
+                    strict_detail += (
+                        f"; SP result/success count mismatch "
+                        f"{result_count}/{success_count}"
+                    )
+                result["error"] = (
+                    "required SP success assertion failed: missing "
+                    + " and ".join(missing)
+                    + " from this attempt's stdout.log/hgasp.log"
+                    + detail
+                    + strict_detail
+                )
             elif not result["solution_exists"] or result["solution_size_bytes"] == 0:
                 result["status"] = "failed"
+                result["process_status"] = "missing_solution"
                 result["error"] = "solver exited successfully but wrote no solution"
             else:
-                result["status"] = SUCCESS_STATUS
+                result["process_status"] = "passed"
+                should_validate = (
+                    validation_required
+                    or (
+                        result["solution_json_exists"]
+                        and result["solution_json_size_bytes"] > 0
+                    )
+                )
+                if should_validate:
+                    if (
+                        not result["solution_json_exists"]
+                        or result["solution_json_size_bytes"] == 0
+                    ):
+                        result["status"] = "failed"
+                        result["validation_status"] = "missing"
+                        result["error"] = (
+                            "independent validation is required but "
+                            "solution.json is missing"
+                        )
+                    else:
+                        try:
+                            validation_result = (
+                                solution_validator.validate_solution(
+                                    Path(str(config["instance"])),
+                                    solution_json_path,
+                                    str(config.get("problem_mode", "clrp")),
+                                    absolute_tolerance=float(
+                                        validation_config.get(
+                                            "absolute_tolerance",
+                                            solution_validator.DEFAULT_ABSOLUTE_TOLERANCE,
+                                        )
+                                    ),
+                                    relative_tolerance=float(
+                                        validation_config.get(
+                                            "relative_tolerance",
+                                            solution_validator.DEFAULT_RELATIVE_TOLERANCE,
+                                        )
+                                    ),
+                                )
+                            )
+                            result["validation"] = validation_result.as_dict()
+                            result["validation_status"] = (
+                                "passed" if validation_result.valid else "failed"
+                            )
+                            if validation_result.valid:
+                                result["status"] = SUCCESS_STATUS
+                            else:
+                                result["status"] = "failed"
+                                first_error = (
+                                    validation_result.errors[0]
+                                    if validation_result.errors
+                                    else "unspecified validation failure"
+                                )
+                                result["error"] = (
+                                    "independent solution validation failed: "
+                                    + first_error
+                                )
+                        except solution_validator.ValidationInputError as error:
+                            result["status"] = "failed"
+                            result["validation_status"] = "error"
+                            result["validation"] = {
+                                "status": "error",
+                                "valid": False,
+                                "errors": [str(error)],
+                                "warnings": [],
+                                "recomputed": {},
+                            }
+                            result["error"] = (
+                                "independent solution validation could not run: "
+                                + str(error)
+                            )
+                else:
+                    result["status"] = SUCCESS_STATUS
+        # A signal can arrive while validation or hashing is running, after
+        # the earlier status decision.  Cancellation remains authoritative
+        # until the final atomic metadata write.
+        if (
+            cancellation_event is not None
+            and cancellation_event.is_set()
+            and result["status"] != "interrupted"
+        ):
+            result["status"] = "interrupted"
+            result["process_status"] = "interrupted"
+            result["error"] = "cancelled by experiment runner"
         write_json(run_path, result)
 
     return result
+
+
+def execute_run(
+    config: Dict[str, Any],
+    run_dir: Path,
+    repo_root: Path,
+    force_successful: bool = False,
+    shared_provenance: Optional[Mapping[str, Any]] = None,
+    cancellation_event: Optional[threading.Event] = None,
+    cpu_affinity: Optional[Sequence[int]] = None,
+    affinity_mode: str = "unbound",
+    inherited_lock_fds: Sequence[int] = (),
+) -> Dict[str, Any]:
+    """Execute one run while exclusively owning its output directory."""
+
+    run_dir.mkdir(parents=True, exist_ok=True)
+    with CrossProcessFileLock(
+        run_dir / ".run.lock", f"run {config.get('run_id', run_dir.name)}"
+    ) as run_lock:
+        assert run_lock.fd is not None
+        return _execute_run_locked(
+            config,
+            run_dir,
+            repo_root,
+            force_successful=force_successful,
+            shared_provenance=shared_provenance,
+            cancellation_event=cancellation_event,
+            cpu_affinity=cpu_affinity,
+            affinity_mode=affinity_mode,
+            inherited_lock_fds=(
+                *tuple(int(fd) for fd in inherited_lock_fds),
+                run_lock.fd,
+            ),
+        )
 
 
 def parse_environment(values: Iterable[str]) -> Dict[str, str]:
@@ -1129,10 +2583,12 @@ def make_direct_config(arguments: argparse.Namespace) -> Tuple[Dict[str, Any], P
         "experiment_name": arguments.experiment_name,
         "run_id": f"{instance_id}__seed_{arguments.seed}",
         "instance_id": instance_id,
+        "problem_mode": arguments.problem_mode,
         "binary": str(binary),
         "instance": str(instance),
         "depot_config": depot,
         "solution": str(solution),
+        "solution_json": str(run_dir / "solution.json"),
         "seed": arguments.seed,
         "best_known": arguments.best_known,
         "is_optimal": arguments.is_optimal,
@@ -1168,8 +2624,17 @@ def make_direct_config(arguments: argparse.Namespace) -> Tuple[Dict[str, Any], P
             "representation_route_limit": (
                 arguments.sp_representation_route_limit
             ),
+            "require_success": arguments.require_sp_success,
         },
         "environment": parse_environment(arguments.env),
+        "validation": {
+            "required": (
+                arguments.require_validation
+                or arguments.problem_mode == "clrp-tw"
+            ),
+            "absolute_tolerance": arguments.validation_absolute_tolerance,
+            "relative_tolerance": arguments.validation_relative_tolerance,
+        },
         "gurobi_home": (
             str(resolve_path(arguments.gurobi_home, repo_root))
             if arguments.gurobi_home
@@ -1189,6 +2654,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--binary", required=True, help="HGA-SP executable")
     parser.add_argument("--instance", required=True, help="CLRP instance file")
     parser.add_argument(
+        "--problem-mode",
+        choices=sorted(PROBLEM_MODES),
+        default="clrp",
+        help="mathematical problem mode (default: clrp)",
+    )
+    parser.add_argument(
         "--depot-config",
         help="optional depot-configuration file; paths with spaces are supported",
     )
@@ -1200,6 +2671,21 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--iteration-limit", required=True, type=int)
     parser.add_argument("--best-known", type=float, default=0.0)
     parser.add_argument("--is-optimal", action="store_true")
+    parser.add_argument(
+        "--require-validation",
+        action="store_true",
+        help="require an independently valid solution.json before success",
+    )
+    parser.add_argument(
+        "--validation-absolute-tolerance",
+        type=float,
+        default=solution_validator.DEFAULT_ABSOLUTE_TOLERANCE,
+    )
+    parser.add_argument(
+        "--validation-relative-tolerance",
+        type=float,
+        default=solution_validator.DEFAULT_RELATIVE_TOLERANCE,
+    )
     parser.add_argument("--gurobi-threads", type=int, default=1)
     parser.add_argument("--sp-trigger-frequency", type=int, default=50001)
     parser.add_argument("--sp-trigger-offset", type=int, default=0)
@@ -1216,6 +2702,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--sp-output-flag", type=int, choices=(0, 1), default=0)
     parser.add_argument("--sp-mip-focus", type=int, choices=range(4), default=1)
     parser.add_argument("--sp-heuristics", type=float, default=0.15)
+    parser.add_argument(
+        "--require-sp-success",
+        action="store_true",
+        help=(
+            "fail unless this attempt logs both an SP result and "
+            "an SP success marker"
+        ),
+    )
     parser.add_argument(
         "--sp-wls-token-duration-minutes",
         type=int,
@@ -1290,27 +2784,85 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     parser = build_parser()
     arguments = parser.parse_args(argv)
-    try:
-        config, run_dir, repo_root = make_direct_config(arguments)
-        result = execute_run(
-            config,
-            run_dir,
-            repo_root,
-            force_successful=arguments.force_successful,
+    cancellation_event = threading.Event()
+    signal_state = SignalState()
+    with cancellation_signal_handlers(cancellation_event) as signal_state:
+        try:
+            config, run_dir, repo_root = make_direct_config(arguments)
+            result = execute_run(
+                config,
+                run_dir,
+                repo_root,
+                force_successful=arguments.force_successful,
+                cancellation_event=cancellation_event,
+            )
+        except ExperimentError as error:
+            if signal_state.signum is not None:
+                cleanup_confirmed = terminate_active_processes()
+                print(
+                    f"interrupted by {signal_state.name}; "
+                    + (
+                        "solver process group cleanup was confirmed"
+                        if cleanup_confirmed
+                        else "solver process group cleanup could not be "
+                        "confirmed after TERM and KILL"
+                    ),
+                    file=sys.stderr,
+                )
+                return 128 + signal_state.signum
+            print(f"error: {error}", file=sys.stderr)
+            return 2
+        except KeyboardInterrupt:
+            cancellation_event.set()
+            cleanup_confirmed = terminate_active_processes()
+            print(
+                "interrupted; "
+                + (
+                    "solver process group cleanup was confirmed"
+                    if cleanup_confirmed
+                    else "solver process group cleanup could not be "
+                    "confirmed after TERM and KILL"
+                ),
+                file=sys.stderr,
+            )
+            return 130
+
+    if signal_state.signum is not None:
+        cleanup_confirmed = terminate_active_processes()
+        print(
+            f"interrupted by {signal_state.name}; "
+            + (
+                "solver process group cleanup was confirmed"
+                if cleanup_confirmed
+                else "solver process group cleanup could not be "
+                "confirmed after TERM and KILL"
+            ),
+            file=sys.stderr,
         )
-    except ExperimentError as error:
-        print(f"error: {error}", file=sys.stderr)
-        return 2
-    except KeyboardInterrupt:
-        print("interrupted", file=sys.stderr)
-        return 130
+        return 128 + signal_state.signum
+
+    cleanup_confirmed = terminate_active_processes()
+    if not cleanup_confirmed:
+        print(
+            "error: one or more solver process groups could not be "
+            "confirmed stopped after TERM and KILL",
+            file=sys.stderr,
+        )
+        return 1
 
     if result.get("skipped"):
         print(f"SKIP {result['run_id']}: successful result already exists")
     else:
+        cpu_time = result.get("cpu_time_seconds")
+        timing = (
+            f"{cpu_time:.3f} CPU s, "
+            f"{result['wall_duration_seconds']:.3f} wall s"
+            if isinstance(cpu_time, (int, float))
+            else f"{result['wall_duration_seconds']:.3f} wall s"
+        )
         print(
             f"{result['status'].upper()} {result['run_id']} "
-            f"({result['duration_seconds']:.3f}s)"
+            f"({timing})"
         )
     return 0 if result["status"] == SUCCESS_STATUS else 1
 

@@ -117,8 +117,26 @@ int main() {
         result.buildTimeSeconds < 0.0 ||
         result.optimizeTimeSeconds < 0.0 ||
         result.postprocessTimeSeconds < 0.0 ||
-        result.retrySleepTimeSeconds < 0.0) {
+        result.retrySleepTimeSeconds < 0.0 ||
+        result.solverWallTimeSeconds < 0.0 ||
+        result.retrySleepWallTimeSeconds < 0.0 ||
+        result.totalWallTimeSeconds < 0.0) {
         return fail("segmented SP timings must be non-negative");
+    }
+    if (result.totalWallTimeSeconds < result.solverWallTimeSeconds) {
+        return fail("native solver wall time exceeds total SP wall time");
+    }
+    const double accountedCpuTime =
+        result.validationTimeSeconds +
+        result.environmentTimeSeconds +
+        result.retrySleepTimeSeconds +
+        result.buildTimeSeconds +
+        result.optimizeTimeSeconds +
+        result.postprocessTimeSeconds;
+    if (accountedCpuTime >
+        result.totalTimeSeconds + 1.0e-3) {
+        return fail(
+            "segmented SP CPU phases were counted more than once");
     }
     if (result.environmentStartAttempts != 1 ||
         result.environmentRetryCount != 0 ||
@@ -136,18 +154,128 @@ int main() {
     if (result.mipStartApplied || result.mipStartRouteCount != 0) {
         return fail("the first solve must not report a prior MIP start");
     }
+    if (!result.lpFeedbackAvailable ||
+        !result.lpObjective.has_value() ||
+        result.customerDuals.size() != 3U ||
+        result.depotCapacityDuals.size() != 2U ||
+        result.routeReducedCosts.size() != pool.size() ||
+        result.persistentLpReused ||
+        result.persistentLpAddedColumns !=
+            static_cast<int>(pool.size()) ||
+        result.persistentLpActiveColumns !=
+            static_cast<int>(pool.size())) {
+        return fail(
+            "first LP-RMP solve did not publish complete dual feedback");
+    }
+    if (result.candidateSolutions.empty() ||
+        result.candidateSolutions.front().selectedRouteIndices !=
+            result.selectedRouteIndices) {
+        return fail(
+            "validated integer incumbent was not retained in the solution pool");
+    }
+
+    SpMipStart hgaStart;
+    hgaStart.source = "hga_global_incumbent";
+    // The order {2,1} is not present in the compressed master pool. Mapping
+    // by depot and customer set must select the cheaper equivalent column.
+    hgaStart.routes = {
+        route(1, 5.0, 5, {2, 1}),
+        route(1, 5.0, 2, {0}),
+    };
+    const SpResult preferred =
+        solver.solve(problem, pool, hgaStart);
+    if (preferred.status != SpStatus::optimal ||
+        !preferred.hasFeasibleSolution() ||
+        !preferred.mipStartApplied ||
+        preferred.mipStartRouteCount != 2 ||
+        preferred.mipStartSource != "hga_global_incumbent" ||
+        preferred.selectedRouteIndices !=
+            std::vector<std::size_t>({2, 3})) {
+        return fail(
+            "current HGA incumbent was not remapped and applied as the "
+            "preferred MIP start");
+    }
 
     const SpResult repeated = solver.solve(problem, pool);
     if (repeated.status != SpStatus::optimal ||
         !repeated.hasFeasibleSolution() ||
         !repeated.mipStartApplied ||
         repeated.mipStartRouteCount != 2 ||
+        repeated.mipStartSource != "previous_sp" ||
         !repeated.environmentReused ||
         repeated.environmentStartAttempts != 0 ||
         repeated.selectedRouteIndices !=
             std::vector<std::size_t>({2, 3})) {
         return fail(
             "same-problem solve did not reuse the environment and complete MIP start");
+    }
+    if (!repeated.lpFeedbackAvailable ||
+        !repeated.persistentLpReused ||
+        repeated.persistentLpAddedColumns != 0 ||
+        repeated.persistentLpDisabledColumns != 0) {
+        return fail(
+            "unchanged LP-RMP snapshot was rebuilt instead of reused");
+    }
+
+    std::vector<StandaloneRoute> expandedPool = pool;
+    expandedPool.push_back(
+        route(0, 20.0, 2, {0}));
+    const SpResult expanded =
+        solver.solve(problem, expandedPool);
+    if (expanded.status != SpStatus::optimal ||
+        !expanded.persistentLpReused ||
+        expanded.persistentLpAddedColumns != 1 ||
+        expanded.persistentLpStoredColumns !=
+            static_cast<int>(pool.size() + 1U) ||
+        expanded.routeReducedCosts.size() !=
+            expandedPool.size()) {
+        return fail(
+            "persistent LP-RMP did not add exactly one new master column");
+    }
+    const SpResult contracted = solver.solve(problem, pool);
+    if (contracted.status != SpStatus::optimal ||
+        !contracted.persistentLpReused ||
+        contracted.persistentLpDisabledColumns != 1 ||
+        contracted.persistentLpActiveColumns !=
+            static_cast<int>(pool.size())) {
+        return fail(
+            "persistent LP-RMP did not disable a pruned historical column");
+    }
+
+    const std::vector<StandaloneRoute> compactPool = {
+        pool[2],
+        pool[3],
+    };
+    const SpResult compacted =
+        solver.solve(problem, compactPool);
+    if (compacted.status != SpStatus::optimal ||
+        !compacted.persistentLpCompacted ||
+        compacted.persistentLpReused ||
+        compacted.persistentLpColumnsBeforeCompaction != 7 ||
+        compacted.persistentLpStoredColumns != 2 ||
+        compacted.persistentLpActiveColumns != 2) {
+        return fail(
+            "persistent LP-RMP did not compact excessive inactive history");
+    }
+
+    SpProblem fixedDepotProblem = problem;
+    fixedDepotProblem.fixedDepotOpen = {true, false};
+    const std::vector<StandaloneRoute> fixedDepotPool = {
+        pool[0],
+        pool[1],
+    };
+    const SpResult fixedDepotResult =
+        solver.solve(fixedDepotProblem, fixedDepotPool);
+    if (fixedDepotResult.status != SpStatus::optimal ||
+        !fixedDepotResult.hasFeasibleSolution() ||
+        !fixedDepotResult.objective.has_value() ||
+        std::fabs(*fixedDepotResult.objective - 16.0) > 1e-9 ||
+        fixedDepotResult.selectedRouteIndices !=
+            std::vector<std::size_t>({0, 1}) ||
+        fixedDepotResult.mipStartApplied) {
+        return fail(
+            "configuration-local SP did not enforce and price the fixed "
+            "depot layout");
     }
 
     SpProblem noExactPartition;

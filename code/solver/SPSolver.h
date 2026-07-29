@@ -20,6 +20,10 @@ public:
     SpResult solve(
         const SpProblem& problem,
         const std::vector<StandaloneRoute>& routes);
+    SpResult solve(
+        const SpProblem& problem,
+        const std::vector<StandaloneRoute>& routes,
+        const SpMipStart& preferredStart);
 
     const SpConfig& config() const noexcept;
 

@@ -9,6 +9,89 @@
 #include "LS.h"
 #include "basic.h"
 #include "Individual.h"
+#include "RouteEvaluator.h"
+
+#include <algorithm>
+#include <set>
+#include <stdexcept>
+#include <vector>
+
+namespace {
+
+std::vector<StandaloneRoute> extractStandaloneRoutes(
+		const Individual& individual,
+		const read_data& data) {
+	std::vector<StandaloneRoute> routes;
+	for (int depot = 0; depot < data.numL; ++depot) {
+		for (int slot = 0;
+			 slot < individual.location[depot].maxVisit;
+			 ++slot) {
+			const Route* route =
+				individual.location[depot].depots[slot].route;
+			if (!route->used || route->load <= 0)
+				continue;
+			StandaloneRoute valueRoute;
+			valueRoute.locId = depot;
+			const Node* node =
+				individual.location[depot].depots[slot].next;
+			while (!node->isDepot) {
+				valueRoute.sequence.push_back(node->cour);
+				node = node->next;
+			}
+			if (!valueRoute.sequence.empty())
+				routes.push_back(std::move(valueRoute));
+		}
+	}
+	return routes;
+}
+
+bool evaluateTimeWindowRouteSet(
+		const read_data& data,
+		std::vector<StandaloneRoute>& routes,
+		double& objective) {
+	HardTimeWindowConstraint temporal;
+	RouteEvaluator evaluator(data, temporal);
+	std::vector<int> depotLoads(
+		static_cast<std::size_t>(data.numL), 0);
+	std::set<int> openedDepots;
+	objective =
+		data.usingCostVeh * static_cast<double>(routes.size());
+
+	for (StandaloneRoute& route : routes) {
+		if (route.locId < 0 || route.locId >= data.numL ||
+			route.sequence.empty()) {
+			return false;
+		}
+		const RouteEvaluation evaluation =
+			evaluator.evaluate(
+				route.locId,
+				route.sequence,
+				EvaluationDetail::Summary);
+		if (!evaluation.feasible())
+			return false;
+		depotLoads[static_cast<std::size_t>(route.locId)] +=
+			evaluation.load;
+		if (depotLoads[static_cast<std::size_t>(route.locId)] >
+			data.invLoc[data.numV + route.locId]) {
+			return false;
+		}
+		route.totalLoad = evaluation.load;
+		route.routeCost = evaluation.travelCost;
+		route.returnTime = evaluation.returnTime;
+		route.totalWaitingTime = evaluation.totalWaitingTime;
+		route.temporalFeasible = evaluation.temporalFeasible;
+		route.temporalViolationCustomer =
+			evaluation.violatingCustomer;
+		objective += evaluation.travelCost;
+		openedDepots.insert(route.locId);
+	}
+	for (const int depot : openedDepots)
+		objective += data.openCostLoc[data.numV + depot];
+	return true;
+}
+
+}  // namespace
+
 LS::LS(read_data * data, RepairProcedure *repair) {
 	this->data=data;
 	this->repair = repair;
@@ -762,6 +845,18 @@ void LS::loadSolution(){
 	}
 }
 void LS::local_search_run(Individual *s,double penaltyDepot, double penaltyVeh){
+	if (data->problemMode == hgasp::ProblemMode::ClrpTw) {
+		this->s = s;
+		timeWindowLocalSearch();
+		s->evaluationDis();
+		s->decideFeasible();
+		if (!s->isFeasible) {
+			throw std::runtime_error(
+				"CLRP-TW local search produced an infeasible solution");
+		}
+		s->isRight();
+		return;
+	}
 	this->penaltyDepot = penaltyDepot;
 	this->penaltyDepot=Max;// no infeasible
 	this->penaltyVeh = penaltyVeh;
@@ -793,6 +888,122 @@ void LS::local_search_run(Individual *s,double penaltyDepot, double penaltyVeh){
 	}
 
 
+}
+
+void LS::timeWindowLocalSearch() {
+	std::vector<StandaloneRoute> incumbent =
+		extractStandaloneRoutes(*s, *data);
+	double incumbentObjective = 0.0;
+	if (!evaluateTimeWindowRouteSet(
+			*data, incumbent, incumbentObjective)) {
+		throw std::runtime_error(
+			"CLRP-TW local search received an infeasible incumbent");
+	}
+
+	// Relocate one customer either within its current route or into another
+	// used route.  Re-evaluating the affected route set includes waiting,
+	// customer due dates, return-to-depot time, both capacities, route fixed
+	// cost, and depot opening cost.  At most eight accepted moves keeps the
+	// initialization workload predictable on the 50-customer benchmark.
+	constexpr int kMaximumAcceptedMoves = 8;
+	for (int accepted = 0;
+		 accepted < kMaximumAcceptedMoves;
+		 ++accepted) {
+		double bestObjective = incumbentObjective;
+		std::vector<StandaloneRoute> bestRoutes;
+
+		for (std::size_t source = 0;
+			 source < incumbent.size();
+			 ++source) {
+			for (std::size_t sourcePosition = 0;
+				 sourcePosition < incumbent[source].sequence.size();
+				 ++sourcePosition) {
+				const int customer =
+					incumbent[source].sequence[sourcePosition];
+				for (std::size_t destination = 0;
+					 destination < incumbent.size();
+					 ++destination) {
+					const std::size_t destinationSize =
+						incumbent[destination].sequence.size();
+					for (std::size_t insertionPosition = 0;
+						 insertionPosition <= destinationSize;
+						 ++insertionPosition) {
+						std::vector<StandaloneRoute> candidate =
+							incumbent;
+						if (source == destination) {
+							std::vector<int>& sequence =
+								candidate[source].sequence;
+							sequence.erase(
+								sequence.begin() +
+								static_cast<std::ptrdiff_t>(
+									sourcePosition));
+							std::size_t adjustedPosition =
+								insertionPosition;
+							if (adjustedPosition > sourcePosition)
+								--adjustedPosition;
+							if (adjustedPosition > sequence.size())
+								adjustedPosition = sequence.size();
+							sequence.insert(
+								sequence.begin() +
+								static_cast<std::ptrdiff_t>(
+									adjustedPosition),
+								customer);
+							if (sequence ==
+								incumbent[source].sequence) {
+								continue;
+							}
+						} else {
+							candidate[source].sequence.erase(
+								candidate[source].sequence.begin() +
+								static_cast<std::ptrdiff_t>(
+									sourcePosition));
+							std::size_t adjustedDestination =
+								destination;
+							if (candidate[source].sequence.empty()) {
+								candidate.erase(
+									candidate.begin() +
+									static_cast<std::ptrdiff_t>(
+										source));
+								if (source < destination)
+									--adjustedDestination;
+							}
+							std::vector<int>& sequence =
+								candidate[adjustedDestination].sequence;
+							const std::size_t boundedPosition =
+								std::min(
+									insertionPosition,
+									sequence.size());
+							sequence.insert(
+								sequence.begin() +
+								static_cast<std::ptrdiff_t>(
+									boundedPosition),
+								customer);
+						}
+
+						double candidateObjective = 0.0;
+						if (evaluateTimeWindowRouteSet(
+								*data,
+								candidate,
+								candidateObjective) &&
+							candidateObjective + Min <
+								bestObjective) {
+							bestObjective = candidateObjective;
+							bestRoutes = std::move(candidate);
+						}
+					}
+				}
+			}
+		}
+
+		if (bestRoutes.empty())
+			break;
+		incumbent = std::move(bestRoutes);
+		incumbentObjective = bestObjective;
+	}
+
+	// The value-level importer is the single commit point and independently
+	// validates all route columns before mutating the linked-list topology.
+	s->rebuildFromSP(incumbent);
 }
 
 /************************************************************************************************/

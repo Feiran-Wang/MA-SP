@@ -14,7 +14,7 @@ class RepairProcedure {
 public:
 	RepairProcedure(read_data * data, popManager * popman);
 	virtual ~RepairProcedure();
-	void repairForInitialSolution(Individual *s);
+	bool repairForInitialSolution(Individual *s);
 	void repairCapacityConstraint(Individual *subPop,double penaltyDepot, double penaltyVeh);
 	double penaltyLocationFunction(Node *p, int loc);
 	double penaltyExcessLocation(int loc, int inventory);
@@ -39,6 +39,11 @@ public:
 	void loadSolution();
 
 	void finalCostCalibration();
+	static bool repairBudgetExceeded(
+		int attempts,
+		int noProgressAttempts,
+		int numCustomers,
+		bool cpuStopRequested) noexcept;
 
 	//
 	void newRepair();
@@ -69,6 +74,7 @@ private:
 	int loadU, loadX, loadV, loadY;
 	double min_delta, delta;
 	int whichMove;
+	long long totalCapacityViolation() const noexcept;
 	//
 	int tabu_length = 30;
 

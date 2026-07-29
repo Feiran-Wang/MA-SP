@@ -21,6 +21,10 @@ public:
 	void removeRoutesAndLocations(Individual *s);
 
 private:
+	// A correctness-first neighborhood for CLRP-TW.  Every candidate is
+	// evaluated as a complete route set before it is committed, so the legacy
+	// distance-only move delta code remains untouched for CLRP.
+	void timeWindowLocalSearch();
 	void check_ls_solution();
 	void Comput_fitLS();
 	void output_solution();
@@ -97,4 +101,3 @@ private:
 	int *auxArray1;
 };
 #endif /* LS_H_ */
-

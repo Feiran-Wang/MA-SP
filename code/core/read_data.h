@@ -13,6 +13,8 @@
 #include <unordered_map>
 
 #include "basic.h"
+#include "EaxParentMode.h"
+#include "ParsedInstance.h"
 
 class read_data {
 public:
@@ -21,7 +23,7 @@ public:
 	double probFixedCost;
 	int iteration;
 	int nbIterNonImpro;
-	int isFleetLimited;
+	int isFleetLimited = 0;
 	clock_t startTime;
 	int timeLimit;
 	int iterLimit;
@@ -51,16 +53,44 @@ public:
 
 	// Crossover and penalty parameters.
 	int eSets_strategy = 3;
+	hgasp::EaxParentMode eaxParentMode =
+		hgasp::EaxParentMode::PaperCompatible;
 	double penaltyDepot = 1.;
 	double penaltyVeh = 1.;
 	double normalizaPara;
 
 	// Route-pool and set-partitioning parameters.
 	int spTriggerFrequency = 50001;
-	// Delays the first SP call to frequency + offset iterations. Subsequent
-	// calls remain frequency iterations apart.
+	// Delays the first scheduled global-SP checkpoint to frequency + offset.
+	// Later checkpoints remain frequency iterations apart. In adaptive mode a
+	// checkpoint can be skipped for an unchanged master or insufficient CPU,
+	// while novelty/stagnation may dispatch SP before the next checkpoint.
 	int spTriggerOffset = 0;
 	double spTimeLimit = 360;
+	bool spLocalEnabled = true;
+	int spLocalTriggerFrequency = 10000;
+	double spLocalTimeLimit = 30;
+	bool spAdaptiveTriggerEnabled = true;
+	int spAdaptiveMinimumInterval = 5000;
+	int spAdaptiveLocalNewColumns = 250;
+	int spAdaptiveLocalStagnation = 5000;
+	int spAdaptiveGlobalStagnation = 20000;
+	double spAdaptiveUtilityEmaWeight = 0.25;
+	double spAdaptiveHighUtilityThreshold = 1.0e-3;
+	bool spLpDualFeedbackEnabled = true;
+	double spLpTimeLimit = 10.0;
+	bool spPersistentLpEnabled = true;
+	int spSolutionPoolSize = 5;
+	double spSolutionPoolGap = 0.02;
+	int spSolutionPoolSearchMode = 2;
+	int spDiverseInjectionCount = 3;
+	bool adaptiveSearchAllocationEnabled = true;
+	double adaptivePopulationExploration = 0.25;
+	double adaptivePopulationDiversityWeight = 0.10;
+	double adaptivePopulationColumnWeight = 0.05;
+	double adaptiveSearchEmaWeight = 0.20;
+	int adaptiveMutationMinimumPercent = 5;
+	int adaptiveMutationMaximumPercent = 40;
 	// Optional deterministic Gurobi work budget. Zero leaves WorkLimit unset.
 	double spWorkLimit = 0;
 	double spMIPGap = 0.001;
@@ -81,10 +111,9 @@ public:
 	int spServerTimeoutSeconds = 30;
 	int spEnvironmentMaxAttempts = 3;
 	int spEnvironmentRetryBaseMilliseconds = 250;
-	// HGAMP assumes an unlimited fleet. This optional compatibility guard
-	// prevents SP solutions from exceeding the fixed-slot Individual
-	// representation.
-	bool spEnforceRepresentationRouteLimit = true;
+	// The Individual representation now uses the proved numV bound, so this
+	// redundant master constraint is disabled by default.
+	bool spEnforceRepresentationRouteLimit = false;
 
 	// Newly established resident populations are protected for this many
 	// iterations before they may be replaced.
@@ -101,10 +130,17 @@ public:
 	int numC;
 	int vehCap;
 	int maxVnum;
+	hgasp::ProblemMode problemMode = hgasp::ProblemMode::Clrp;
+	hgasp::InstanceFormat instanceFormat =
+		hgasp::InstanceFormat::LegacyDat;
 	// Row pointers retained for the existing D[from][to] API. All rows point
 	// into one contiguous allocation to improve spatial locality and reduce
 	// allocator/TLB overhead in the route-generator hot loops.
 	double** D;
+	// Travel time is deliberately separate from objective travel cost. Set S
+	// preserves its legacy D rounding exactly; Farham Set F uses floor of the
+	// Euclidean distance for both matrices, matching the published benchmark.
+	double** T;
 	double* x;
 	double* y;
 	int* demCus;
@@ -112,6 +148,13 @@ public:
 	double* openCostLoc;
 	double usingCostVeh;
 	int realOrInteger = 0;
+	std::vector<double> readyTime;
+	std::vector<double> dueTime;
+	std::vector<double> serviceTime;
+	std::vector<double> depotOpenTime;
+	std::vector<double> depotCloseTime;
+	std::vector<int> originalCustomerIds;
+	std::vector<int> originalDepotIds;
 
 	read_data();
 	virtual ~read_data();
@@ -124,10 +167,20 @@ public:
 		double bestDis,
 		int isOptimal,
 		int timeLimit,
-		int iterLimit);
+		int iterLimit,
+		hgasp::ProblemMode requestedMode = hgasp::ProblemMode::Clrp);
 	std::vector<std::string> splitwithstr(std::string& str, char ch);
 	bool equalTwoVar(double A, double B);
 	bool stopCondition(double dis);
+	// Reset immediately after instance loading and before search construction.
+	// This excludes parser/startup work from the scientific search-time scope.
+	void resetSearchCpuClock() noexcept;
+	// Process CPU consumed since resetSearchCpuClock(). Algorithm limits and
+	// the scientific time reported in solution.txt use this exact scope.
+	double elapsedCpuSeconds() const noexcept;
+	// Record the time at which the global (not restart-local) incumbent was
+	// last strictly improved.
+	void recordGlobalIncumbent() noexcept;
 
 	// Run input and best-known-value tracking.
 	std::string pathSolution;
@@ -150,7 +203,9 @@ public:
 	bool no_capacity_location = false;
 
 private:
+	friend struct ReadDataLoopSafetyTestAccess;
 	double* distanceStorage;
+	double* timeStorage;
 	int* solutionTabu;
 	double maxDemand;
 	double maxDist;

@@ -1,11 +1,16 @@
 #ifndef HGASP_UTILS_COMMANDLINE_H_
 #define HGASP_UTILS_COMMANDLINE_H_
 
+#include "EaxParentMode.h"
+#include "ProblemMode.h"
+
 #include <cmath>
 #include <iostream>
 #include <limits>
+#include <optional>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 class CommandLine {
 public:
@@ -17,6 +22,8 @@ public:
     int seed = 0;
     double bestDis = 0.0;
     int isOptimal = 0;
+    hgasp::ProblemMode problemMode = hgasp::ProblemMode::Clrp;
+    std::optional<hgasp::EaxParentMode> eaxParentMode;
 
 private:
     static int parseInt(const char* text, const char* label) {
@@ -54,32 +61,103 @@ public:
         output
             << "Usage:\n  " << program
             << " INSTANCE [DEPOT_CONFIG] OUTPUT BEST_VALUE IS_OPTIMAL"
-               " TIME_LIMIT ITERATION_LIMIT SEED\n\n"
+               " TIME_LIMIT ITERATION_LIMIT SEED"
+               " [--problem-mode clrp|clrp-tw]"
+               " [--eax-mode paper-compatible|corrected]\n\n"
+            << "The default problem mode is clrp, preserving the legacy"
+               " Set S command line. Farham Set F instances require"
+               " --problem-mode clrp-tw.\n"
             << "IS_OPTIMAL must be 0 or 1. TIME_LIMIT must be non-negative"
                " (0 means unlimited), ITERATION_LIMIT must be positive,"
                " and SEED must be non-negative.\n";
     }
 
     CommandLine(const int argc, char* argv[]) {
-        if (argc != 8 && argc != 9) {
+        std::vector<std::string> positional;
+        bool modeSeen = false;
+        bool eaxModeSeen = false;
+        for (int index = 1; index < argc; ++index) {
+            const std::string argument = argv[index];
+            if (argument == "--problem-mode") {
+                if (modeSeen) {
+                    throw std::invalid_argument(
+                        "--problem-mode may be specified only once");
+                }
+                if (index + 1 >= argc) {
+                    throw std::invalid_argument(
+                        "--problem-mode requires clrp or clrp-tw");
+                }
+                problemMode = hgasp::parseProblemMode(argv[++index]);
+                modeSeen = true;
+                continue;
+            }
+            const std::string prefix = "--problem-mode=";
+            if (argument.compare(0, prefix.size(), prefix) == 0) {
+                if (modeSeen) {
+                    throw std::invalid_argument(
+                        "--problem-mode may be specified only once");
+                }
+                problemMode =
+                    hgasp::parseProblemMode(argument.substr(prefix.size()));
+                modeSeen = true;
+                continue;
+            }
+            if (argument == "--eax-mode") {
+                if (eaxModeSeen) {
+                    throw std::invalid_argument(
+                        "--eax-mode may be specified only once");
+                }
+                if (index + 1 >= argc) {
+                    throw std::invalid_argument(
+                        "--eax-mode requires paper-compatible or corrected");
+                }
+                eaxParentMode =
+                    hgasp::parseEaxParentMode(argv[++index]);
+                eaxModeSeen = true;
+                continue;
+            }
+            const std::string eaxPrefix = "--eax-mode=";
+            if (argument.compare(0, eaxPrefix.size(), eaxPrefix) == 0) {
+                if (eaxModeSeen) {
+                    throw std::invalid_argument(
+                        "--eax-mode may be specified only once");
+                }
+                eaxParentMode = hgasp::parseEaxParentMode(
+                    argument.substr(eaxPrefix.size()));
+                eaxModeSeen = true;
+                continue;
+            }
+            if (argument.compare(0, 2, "--") == 0) {
+                throw std::invalid_argument(
+                    "unknown option: " + argument);
+            }
+            positional.push_back(argument);
+        }
+
+        if (positional.size() != 7 && positional.size() != 8) {
             throw std::invalid_argument("expected 7 or 8 positional arguments");
         }
 
         int offset = 0;
-        pathInstance = argv[1];
-        if (argc == 9) {
-            pathDepotCon = argv[2];
+        pathInstance = positional[0];
+        if (positional.size() == 8) {
+            pathDepotCon = positional[1];
             offset = 1;
         } else {
             pathDepotCon = "NULL";
         }
-        pathSolution = argv[2 + offset];
+        pathSolution = positional[1 + offset];
 
-        bestDis = parseDouble(argv[3 + offset], "BEST_VALUE");
-        isOptimal = parseInt(argv[4 + offset], "IS_OPTIMAL");
-        timeLimit = parseInt(argv[5 + offset], "TIME_LIMIT");
-        iterLimit = parseInt(argv[6 + offset], "ITERATION_LIMIT");
-        seed = parseInt(argv[7 + offset], "SEED");
+        bestDis = parseDouble(
+            positional[2 + offset].c_str(), "BEST_VALUE");
+        isOptimal = parseInt(
+            positional[3 + offset].c_str(), "IS_OPTIMAL");
+        timeLimit = parseInt(
+            positional[4 + offset].c_str(), "TIME_LIMIT");
+        iterLimit = parseInt(
+            positional[5 + offset].c_str(), "ITERATION_LIMIT");
+        seed = parseInt(
+            positional[6 + offset].c_str(), "SEED");
 
         if (isOptimal != 0 && isOptimal != 1) {
             throw std::invalid_argument("IS_OPTIMAL must be 0 or 1");
@@ -96,6 +174,12 @@ public:
     void displayInfo(std::ostream& output) const {
         output << "Starting HGA-SP\n"
                << "Instance: " << pathInstance << '\n'
+               << "Problem mode: " << hgasp::toString(problemMode) << '\n'
+               << "EAX mode override: "
+               << (eaxParentMode.has_value()
+                       ? hgasp::toString(*eaxParentMode)
+                       : "environment/default")
+               << '\n'
                << "Seed: " << seed << std::endl;
     }
 };

@@ -13,6 +13,27 @@
 #include <memory>
 typedef std::vector <Individual*> SubPopulation ;
 typedef std::vector <std::vector<Individual*>> Population ;
+
+enum class SpInjectionDisposition {
+	Rejected,
+	AdmittedExisting,
+	AdmittedNewConfiguration,
+};
+
+struct SpInjectionResult {
+	SpInjectionDisposition disposition =
+		SpInjectionDisposition::Rejected;
+	int populationIndex = -1;
+
+	bool admitted() const noexcept {
+		return disposition != SpInjectionDisposition::Rejected;
+	}
+	bool createdPopulation() const noexcept {
+		return disposition ==
+			SpInjectionDisposition::AdmittedNewConfiguration;
+	}
+};
+
 class popManager {
 public:
 	popManager(read_data * data);
@@ -44,7 +65,7 @@ public:
     
     // Admits an SP solution to a matching resident population, or lets it
     // replace the worst resident population when it introduces a new layout.
-	int injectSPSolution(
+	SpInjectionResult injectSPSolution(
 		std::unique_ptr<Individual> spIndiv,
 		class RoutePool* pool = nullptr);
 

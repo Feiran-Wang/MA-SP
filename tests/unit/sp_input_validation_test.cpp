@@ -216,6 +216,39 @@ int main() {
         return 1;
     }
 
+    invalidConfig = defaultConfig;
+    invalidConfig.lpTimeLimitSeconds = 0.0;
+    if (expectInvalid(
+            "zero LP-RMP time limit",
+            invalidConfig,
+            defaultProblem,
+            {route(5, {0, 1})},
+            "LP-RMP time limit") != 0) {
+        return 1;
+    }
+
+    invalidConfig = defaultConfig;
+    invalidConfig.solutionPoolSize = 0;
+    if (expectInvalid(
+            "zero solution-pool size",
+            invalidConfig,
+            defaultProblem,
+            {route(5, {0, 1})},
+            "solution-pool size") != 0) {
+        return 1;
+    }
+
+    invalidConfig = defaultConfig;
+    invalidConfig.solutionPoolSearchMode = 3;
+    if (expectInvalid(
+            "invalid solution-pool mode",
+            invalidConfig,
+            defaultProblem,
+            {route(5, {0, 1})},
+            "solution-pool search mode") != 0) {
+        return 1;
+    }
+
     std::cout << "sp_input_validation_test: PASS" << std::endl;
     return 0;
 }

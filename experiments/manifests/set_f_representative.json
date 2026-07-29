@@ -1,0 +1,53 @@
+{
+  "schema_version": 3,
+  "problem_mode": "clrp-tw",
+  "name": "set_f_representative",
+  "binary": "build/release-gurobi/hgasp",
+  "output_root": "artifacts/experiments",
+  "instances": [
+    {"id": "R101_s1_3_25", "path": "instances/set_F/R101_s1_3_25.txt", "reference": {"status": "unknown", "value": null, "distance_policy": "euclidean-floor"}},
+    {"id": "R104_s1_3_40", "path": "instances/set_F/R104_s1_3_40.txt", "reference": {"status": "unknown", "value": null, "distance_policy": "euclidean-floor"}},
+    {"id": "R101_s2_2", "path": "instances/set_F/R101_s2_2.txt", "reference": {"status": "unknown", "value": null, "distance_policy": "euclidean-floor"}},
+    {"id": "R101_s2_5", "path": "instances/set_F/R101_s2_5.txt", "reference": {"status": "unknown", "value": null, "distance_policy": "euclidean-floor"}},
+    {"id": "C101_s3_3_25", "path": "instances/set_F/C101_s3_3_25.txt", "reference": {"status": "unknown", "value": null, "distance_policy": "euclidean-floor"}},
+    {"id": "C101_s4_5_50", "path": "instances/set_F/C101_s4_5_50.txt", "reference": {"status": "unknown", "value": null, "distance_policy": "euclidean-floor"}}
+  ],
+  "seeds": [
+    0
+  ],
+  "limits": {
+    "time_seconds": 600,
+    "iterations": 100000,
+    "process_timeout_seconds": 720
+  },
+  "resources": {
+    "workers": 1,
+    "gurobi_threads": 1,
+    "allow_smt": false
+  },
+  "sp": {
+    "trigger_frequency": 50001,
+    "trigger_offset": "deterministic",
+    "time_limit_seconds": 360,
+    "work_limit": 0,
+    "mip_gap": 0.001,
+    "seed": 0,
+    "max_pool_size": 50000,
+    "output_flag": 0,
+    "mip_focus": 1,
+    "heuristics": 0.15,
+    "wls_token_duration_minutes": 0,
+    "wls_token_refresh": 0.9,
+    "client_log_level": 1,
+    "server_timeout_seconds": 30,
+    "environment_max_attempts": 3,
+    "environment_retry_base_milliseconds": 250,
+    "representation_route_limit": true
+  },
+  "validation": {
+    "required": true,
+    "absolute_tolerance": 1e-09,
+    "relative_tolerance": 1e-09
+  },
+  "environment": {}
+}

@@ -1,0 +1,54 @@
+{
+  "schema_version": 3,
+  "problem_mode": "clrp-tw",
+  "name": "set_f_b2t_table7_2runs_strict",
+  "binary": "build/release-gurobi/hgasp",
+  "output_root": "artifacts/experiments",
+  "fail_fast": true,
+  "instances": [
+    {"id": "C102_s3_5_50", "path": "instances/set_F/C102_s3_5_50.txt", "stop_at_reference": false, "reference": {"status": "bks", "value": 7615.2, "source": "20-B2T Table 7", "distance_policy": "as-published-B2T"}},
+    {"id": "C103_s3_5_50", "path": "instances/set_F/C103_s3_5_50.txt", "stop_at_reference": false, "reference": {"status": "bks", "value": 7617.0, "source": "20-B2T Table 7", "distance_policy": "as-published-B2T"}},
+    {"id": "C104_s3_5_50", "path": "instances/set_F/C104_s3_5_50.txt", "stop_at_reference": false, "reference": {"status": "bks", "value": 7622.4, "source": "20-B2T Table 7", "distance_policy": "as-published-B2T"}},
+    {"id": "C109_s3_5_50", "path": "instances/set_F/C109_s3_5_50.txt", "stop_at_reference": false, "reference": {"status": "bks", "value": 7606.9, "source": "20-B2T Table 7", "distance_policy": "as-published-B2T"}},
+    {"id": "C103_s4_5_50", "path": "instances/set_F/C103_s4_5_50.txt", "stop_at_reference": false, "reference": {"status": "bks", "value": 7636.6, "source": "20-B2T Table 7", "distance_policy": "as-published-B2T"}},
+    {"id": "C104_s4_5_50", "path": "instances/set_F/C104_s4_5_50.txt", "stop_at_reference": false, "reference": {"status": "bks", "value": 7642.0, "source": "20-B2T Table 7", "distance_policy": "as-published-B2T"}},
+    {"id": "C109_s4_5_50", "path": "instances/set_F/C109_s4_5_50.txt", "stop_at_reference": false, "reference": {"status": "bks", "value": 7614.4, "source": "20-B2T Table 7", "distance_policy": "as-published-B2T"}}
+  ],
+  "seeds": [0, 1],
+  "limits": {
+    "time_seconds": 0,
+    "iterations": 300000,
+    "process_timeout_seconds": 7200
+  },
+  "resources": {
+    "workers": 20,
+    "gurobi_threads": 1,
+    "allow_smt": false
+  },
+  "sp": {
+    "trigger_frequency": 50001,
+    "trigger_offset": "deterministic",
+    "time_limit_seconds": 360,
+    "work_limit": 0,
+    "mip_gap": 0.001,
+    "seed": 0,
+    "max_pool_size": 50000,
+    "output_flag": 0,
+    "mip_focus": 1,
+    "heuristics": 0.15,
+    "wls_token_duration_minutes": 0,
+    "wls_token_refresh": 0.9,
+    "client_log_level": 1,
+    "server_timeout_seconds": 30,
+    "environment_max_attempts": 3,
+    "environment_retry_base_milliseconds": 250,
+    "representation_route_limit": true,
+    "require_success": true
+  },
+  "validation": {
+    "required": true,
+    "absolute_tolerance": 1e-09,
+    "relative_tolerance": 1e-09
+  },
+  "environment": {}
+}

@@ -1,5 +1,6 @@
 {
-  "schema_version": 2,
+  "schema_version": 3,
+  "problem_mode": "clrp",
   "name": "all_100_5_sp10_parallelism",
   "binary": "build/release-gurobi/hgasp",
   "output_root": "artifacts/experiments/sp10_parallelism/20_workers",
@@ -131,6 +132,9 @@
     "environment_max_attempts": 3,
     "environment_retry_base_milliseconds": 250,
     "representation_route_limit": true
+  },
+  "validation": {
+    "required": false
   },
   "environment": {}
 }

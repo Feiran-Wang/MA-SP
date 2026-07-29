@@ -7,7 +7,11 @@
  ******************************************************************************/
 
 #include "basic.h"
+#include "FeasibleInsertionFinder.h"
+#include "ProblemMode.h"
 #include "initialsol.h"
+#include <algorithm>
+#include <numeric>
 #include <stdexcept>
 initial_sol::initial_sol(read_data * data, RepairProcedure *repair) {
 	this->repair = repair;
@@ -426,12 +430,102 @@ void initial_sol::remedyTheSolution(std::vector<int> location){// to use the inf
 	//repair the infeasible solution
 	s->evaluationDis();
 //	s->outputSolution();
-	repair->repairForInitialSolution(s);
+		repair->repairForInitialSolution(s);
 //	s->outputSolution();
 }
-void initial_sol::initial_solution(Individual *s, int rankPop){
+void initial_sol::clearFailedTimeWindowSolution(Individual *target) {
+	if (target == nullptr) {
+		return;
+	}
+	target->initilization();
+	target->evaluationDis();
+	target->decideFeasible();
+	// An empty solution can satisfy the legacy capacity-only predicate, but it
+	// is not a valid solution of a nonempty CLRP-TW instance.
+	target->isFeasible = false;
+}
+
+bool initial_sol::rebuildTimeWindowFeasible(
+		Individual *target,
+		const std::vector<int>& customerOrder,
+		const int rankPop) {
+	if (target == nullptr) {
+		throw std::invalid_argument(
+			"cannot rebuild a null CLRP-TW individual");
+	}
+	if (data->problemMode != hgasp::ProblemMode::ClrpTw) {
+		throw std::logic_error(
+			"time-window reconstruction is available only in clrp-tw "
+			"mode");
+	}
+
+	hgasp::FeasibleInsertionFinder finder(*data);
+	hgasp::FeasibleInsertionResult result;
+	std::string diagnostic;
+	if (!finder.build(
+			customerOrder, rankPop, result, &diagnostic)) {
+		clearFailedTimeWindowSolution(target);
+		return false;
+	}
+
+	// rebuildFromSP is the sole topology commit.  Every route column has
+	// already passed the shared hard-TW evaluator, so selecting these
+	// independent columns cannot change any route's schedule.
+	target->rebuildFromSP(result.routes);
+	target->evaluationDis();
+	target->decideFeasible();
+	if (!target->isFeasible) {
+		clearFailedTimeWindowSolution(target);
+		return false;
+	}
+	target->isRight();
+	return true;
+}
+
+bool initial_sol::initial_solution(Individual *s, int rankPop){
 	this->s=s;
 	this->rankPop = rankPop;
+	if (data->problemMode == hgasp::ProblemMode::ClrpTw) {
+		std::vector<int> order(static_cast<std::size_t>(numV));
+		std::iota(order.begin(), order.end(), 0);
+
+		// Repeated construction is intentionally bounded.  All failed attempts
+		// leave an empty Individual, while the final due-time ordering provides
+		// a deterministic urgency-first fallback.
+		const int attempts =
+			std::max(16, std::min(128, 2 * numV));
+		for (int attempt = 0; attempt < attempts; ++attempt) {
+			if (attempt + 1 == attempts) {
+				std::stable_sort(
+					order.begin(),
+					order.end(),
+					[this](const int lhs, const int rhs) {
+						const double lhsDue =
+							data->dueTime[
+								static_cast<std::size_t>(lhs)];
+						const double rhsDue =
+							data->dueTime[
+								static_cast<std::size_t>(rhs)];
+						if (lhsDue != rhsDue) {
+							return lhsDue < rhsDue;
+						}
+						return lhs < rhs;
+					});
+			} else {
+				RandomShuffle(order);
+			}
+
+			const int diversifiedRank =
+				rankPop < 0 ? -1 : rankPop + attempt;
+			if (rebuildTimeWindowFeasible(
+					s, order, diversifiedRank)) {
+				return true;
+			}
+		}
+		clearFailedTimeWindowSolution(s);
+		return false;
+	}
+
 //	if ((int)data->compactLocConfigure.size() == 0)
 //	greedyInsert();
 //	else
@@ -445,5 +539,9 @@ void initial_sol::initial_solution(Individual *s, int rankPop){
 	std::cout<<std::endl;
 */
 	s->evaluationDis();
+	s->decideFeasible();
+	if (!s->isFeasible)
+		return false;
 	s->isRight();
+	return true;
 }

@@ -27,6 +27,10 @@ struct Route{
 	NodeDepot *whichLocation;
 	double dis;					// Total time on the route
 	int load;						// Total load on the route
+	double returnTime;				// Return time at the route's depot
+	double waitingTime;				// Total waiting before customer service
+	bool temporalFeasible;			// Hard-TW/depot-horizon feasibility
+	int temporalViolationCustomer;	// Internal customer index, or -1
 	double penalty;						// Current sum of load and duration penalties
 };
 struct Node{
@@ -97,6 +101,10 @@ public:
 	void isRight();
 	void decideFeasible();
 	void outputBestSolution();
+	// Exact population-duplicate predicate. Route-slot order is ignored, while
+	// depot assignment and directed customer order inside every route remain
+	// part of the structure.
+	bool hasSameRouteStructure(const Individual& other) const;
     
     void rebuildFromSP(const std::vector<StandaloneRoute>& spRoutes);// 根据数学规划求解器返回的抽象路径重组底层链表拓扑
 	/**********************************/

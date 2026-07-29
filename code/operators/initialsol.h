@@ -11,11 +11,24 @@
 #include "read_data.h"
 #include "Individual.h"
 #include "RepairProcedure.h"
+#include <vector>
 class initial_sol {
 public:
 	initial_sol(read_data * data,RepairProcedure *repair);
 	virtual ~initial_sol();
-	void initial_solution(Individual *s, int rankPop);
+	// Existing CLRP callers may ignore the return value.  CLRP-TW callers
+	// should reject a false result; a failed build leaves an empty, explicitly
+	// infeasible Individual.
+	bool initial_solution(Individual *s, int rankPop);
+
+	// Rebuilds a CLRP-TW solution from a complete customer permutation using
+	// cheapest feasible insertion.  This is the safe repair boundary used
+	// after crossover: no linked-list mutation occurs until a complete,
+	// independently validated route plan has been found.
+	bool rebuildTimeWindowFeasible(
+		Individual *s,
+		const std::vector<int>& customerOrder,
+		int rankPop = -1);
 private:
 	Individual * s;
 	read_data * data;
@@ -36,6 +49,7 @@ private:
 	void newGreedyInsert();
 	void insertCusToLoc(int loc);
 	void remedyTheSolution(std::vector<int> location);
+	void clearFailedTimeWindowSolution(Individual *target);
 
 
 	//parameters

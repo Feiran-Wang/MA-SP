@@ -7,6 +7,7 @@
  ******************************************************************************/
 
 #include "RepairProcedure.h"
+#include "RunLogger.h"
 
 RepairProcedure::RepairProcedure(read_data *data, popManager * popman) {
 	this->data = data;
@@ -25,6 +26,36 @@ RepairProcedure::~RepairProcedure(){
 		delete [] tabuTable[i];
 	delete [] tabuTable;
 	delete [] checkCus;
+}
+bool RepairProcedure::repairBudgetExceeded(
+		const int attempts,
+		const int noProgressAttempts,
+		const int numCustomers,
+		const bool cpuStopRequested) noexcept {
+	const int safeCustomers = std::max(1, numCustomers);
+	const int maximumAttempts = std::max(200, safeCustomers * 20);
+	const int maximumNoProgress = std::max(100, safeCustomers * 5);
+	return cpuStopRequested ||
+		attempts >= maximumAttempts ||
+		noProgressAttempts >= maximumNoProgress;
+}
+long long RepairProcedure::totalCapacityViolation() const noexcept {
+	long long violation = 0;
+	for (int depot = 0; depot < numL; ++depot) {
+		violation += std::max(
+			0,
+			s->location[depot].remainInven -
+				s->location[depot].inventory);
+		for (int route = 0;
+			 route < s->location[depot].maxVisit;
+			 ++route) {
+			violation += std::max(
+				0,
+				s->location[depot].depots[route].route->load -
+					data->vehCap);
+		}
+	}
+	return violation;
 }
 bool RepairProcedure::checkInfeasible(){
 	for (int i=0;i<numL;i++){
@@ -780,20 +811,51 @@ void RepairProcedure::newRepair(){
 		}
 	}
 }
-void RepairProcedure::repairForInitialSolution(Individual *s){
+bool RepairProcedure::repairForInitialSolution(Individual *s){
 	this->s = s;
 	loadSolution();
 	loadInventory();
 	this->penaltyDepot = data->penaltyDepot;
 	this->penaltyVeh = data->penaltyVeh;
-	if(checkInfeasible())return;// check the in-feasibility
+	if(checkInfeasible())return true;// check the in-feasibility
 	int loopID = 1;
+	auto reportBudgetExhaustion =
+		[this](const char* phase) noexcept {
+			std::cerr
+				<< "[Repair] status=discarded reason=budget_exhausted"
+				<< " phase=" << phase
+				<< " iteration=" << iteration
+				<< std::endl;
+			hgasp::RunLogger::event(
+				hgasp::LogLevel::warning,
+				"repair",
+				"budget_exhausted",
+				"discarding an unrepaired initial-solution candidate",
+				{
+					{"phase", phase},
+					{"iteration", iteration},
+					{"cpu_seconds", data->elapsedCpuSeconds()},
+				});
+		};
 	updateThePenalty(-1, NULL);
 	for (int i=0;i<data->maxVnum;i++)
-		for (int j=0;j<numC; j++)
-			tabuTable[i][j] = 0;
+			for (int j=0;j<numC; j++)
+				tabuTable[i][j] = 0;
 	iteration = 0;
+	int noProgressAttempts = 0;
+	long long bestViolation = totalCapacityViolation();
 	while(1){
+		const bool cpuStopRequested =
+			data->timeLimit > 0 &&
+			data->elapsedCpuSeconds() >= data->timeLimit;
+		if (repairBudgetExceeded(
+				iteration,
+				noProgressAttempts,
+				numV,
+				cpuStopRequested)) {
+			reportBudgetExhaustion("depot_capacity");
+			return false;
+		}
 		min_delta = Max;
 		for (int i=0;i<numL; i++){// to adjust some customers
 			if (data->equalTwoVar(s->location[i].penalty, 0))continue;
@@ -837,6 +899,14 @@ void RepairProcedure::repairForInitialSolution(Individual *s){
 		updateTheMove();
 
 		iteration++;
+		const long long currentViolation =
+			totalCapacityViolation();
+		if (currentViolation < bestViolation) {
+			bestViolation = currentViolation;
+			noProgressAttempts = 0;
+		} else {
+			++noProgressAttempts;
+		}
 		if (iteration > loopID*numV/10. && (s->inventory < data->totalDemand || s->inventoryVeh < data->totalDemand)){
 			penaltyVeh = penaltyVeh*10;
 			penaltyDepot = penaltyDepot*10;
@@ -853,7 +923,20 @@ void RepairProcedure::repairForInitialSolution(Individual *s){
 			tabuTable[i][j] = 0;
 	iteration = 0;
 	bool inFeasible = false;
+	noProgressAttempts = 0;
+	bestViolation = totalCapacityViolation();
 	while(1){
+		const bool cpuStopRequested =
+			data->timeLimit > 0 &&
+			data->elapsedCpuSeconds() >= data->timeLimit;
+		if (repairBudgetExceeded(
+				iteration,
+				noProgressAttempts,
+				numV,
+				cpuStopRequested)) {
+			reportBudgetExhaustion("vehicle_capacity");
+			return false;
+		}
 		min_delta = Max;
 		for (int i=0;i<numL; i++){// to adjust some customers
 			for (int j=0; j<s->location[i].maxVisit; j++){
@@ -930,19 +1013,27 @@ void RepairProcedure::repairForInitialSolution(Individual *s){
 				}
 			}
 		}
-		if (min_delta == Max )
-			return;
+			if (min_delta == Max )
+				return checkInfeasible();
 //		s->outputSolution();
 		updateTheMove();
 
 		iteration++;
-		if (iteration > loopID*numV/10. && (s->inventory < data->totalDemand || s->inventoryVeh < data->totalDemand)){
-			penaltyVeh = penaltyVeh*10;
-			penaltyDepot = penaltyDepot*10;
-			updateThePenalty(-1, NULL);
-			loopID ++;
+		const long long currentViolation =
+			totalCapacityViolation();
+		if (currentViolation < bestViolation) {
+			bestViolation = currentViolation;
+			noProgressAttempts = 0;
+		} else {
+			++noProgressAttempts;
 		}
-	}
+			if (iteration > loopID*numV/10. && (s->inventory < data->totalDemand || s->inventoryVeh < data->totalDemand)){
+				penaltyVeh = penaltyVeh*10;
+				penaltyDepot = penaltyDepot*10;
+				updateThePenalty(-1, NULL);
+				loopID ++;
+			}
+		}
 }
 void RepairProcedure::repairCapacityConstraint(Individual *subPop,double penaltyDepot, double penaltyVeh){
 	this->penaltyDepot=penaltyDepot;

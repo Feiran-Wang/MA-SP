@@ -1,5 +1,6 @@
 {
-  "schema_version": 2,
+  "schema_version": 3,
+  "problem_mode": "clrp",
   "name": "all_100_5_full_10_runs",
   "binary": "build/release-gurobi/hgasp",
   "output_root": "artifacts/experiments",
@@ -142,6 +143,9 @@
     "environment_max_attempts": 3,
     "environment_retry_base_milliseconds": 250,
     "representation_route_limit": true
+  },
+  "validation": {
+    "required": false
   },
   "environment": {}
 }

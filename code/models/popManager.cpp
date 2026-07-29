@@ -9,6 +9,7 @@
 #include "popManager.h"
 #include "RoutePool.h"
 #include <cmath>
+#include <stdexcept>
 
 popManager::popManager(read_data *data) {
 	this->data=data;
@@ -42,13 +43,15 @@ void popManager:: copyAllData(Individual * s,Individual *ss){
 	}
 	for (int i=0;i<numL;i++){
 		s->location[i].emptyRoutes.clear();
+		s->location[i].used = false;
+		s->location[i].splitTime = 0;
+		s->location[i].remainInven = 0;
 		for (int j=0;j<s->location[i].maxVisit;j++){
 			s->location[i].depots[j].next = &s->location[i].endDepots[j];
 			s->location[i].endDepots[j].pre = &s->location[i].depots[j];
+			s->location[i].depots[j].route->used = false;
 			s->updateRouteInfor(s->location[i].depots[j].route->cour, -1);
 		}
-	//	s->updateLocationInfor(i + numV);
-		s->location[i].used=false;
 		s->location[i].emptyRoutes.clear();
 	}
 	//
@@ -92,9 +95,24 @@ void popManager:: copyAllData(Individual * s,Individual *ss){
 	s->dis=ss->dis;
 	s->fit=ss->fit;
 	s->biasedFit=ss->biasedFit;
-	s->isFeasible=ss->isFeasible;
+	// Feasibility is a property of the rebuilt topology, not a transferable
+	// flag.  In CLRP-TW this independently rechecks every hard time window.
+	s->decideFeasible();
 }
 int popManager::addIndividual(Individual *indiv, int rankPop, bool isInitial, RoutePool* pool){
+	if (indiv == nullptr)
+		return -1;
+	indiv->decideFeasible();
+	// Population membership is a trust boundary.  Never clone or export an
+	// individual that fails the current problem mode's feasibility policy.
+	if (!indiv->isFeasible)
+		return -1;
+	// Route contribution is deliberately independent from population
+	// admission. In particular, an equal-cost/structural duplicate or a
+	// candidate that later loses a replacement decision can still contribute
+	// new master columns.
+	if (pool != nullptr)
+		pool->submitFeasibleIndividual(indiv);
 	if (isInitial){
 		std::vector<int>depot;
 		if (rankPop > -1 && rankPop < data->numLocConfiguration){
@@ -119,8 +137,9 @@ int popManager::addIndividual(Individual *indiv, int rankPop, bool isInitial, Ro
 	//////////////////////////////////////////////////////////////////////////////////////////////////////////
 	SubPopulation & subpop = popula[rankPop];
 	//
-	for (Individual * myIndividual : subpop)// no clone individuals
-		if (myIndividual->fit + Min > indiv->fit && myIndividual->fit - Min < indiv->fit)
+	for (Individual * myIndividual : subpop)// no structural clones
+		if (data->equalTwoVar(myIndividual->fit, indiv->fit) &&
+			myIndividual->hasSameRouteStructure(*indiv))
 			return -1;
 	//
 	Individual * myIndividual = new Individual();
@@ -145,12 +164,11 @@ int popManager::addIndividual(Individual *indiv, int rankPop, bool isInitial, Ro
 		indiv->isRight();
 		bestIndivRestart->initilization();
 		copyAllData(bestIndivRestart, indiv);
-		data->meetBestTime = (double)clock()/(double)CLOCKS_PER_SEC;
 		data->nbIterNonImpro=0;
 		if (indiv->fit + Min < global->fit){
 			global->initilization();
 			copyAllData(global, indiv);
-			data->meetBestTime = float((double)clock()/(double)CLOCKS_PER_SEC);
+				data->recordGlobalIncumbent();
 		}
 		//to replace a subPop if the new global solution's not belong to any subpop.
 		if (!data->no_capacity_location){
@@ -327,14 +345,6 @@ int popManager::addIndividual(Individual *indiv, int rankPop, bool isInitial, Ro
 		while ((int)subpop.size() > data->popMin)
 			removeWorstBiasedFitness(subpop);
 	}
-	// Admit routes from feasible solutions that beat the historical mean.
-	if (pool != nullptr && indiv->isFeasible) {
-		if (indiv->fit < pool->getAverageFitness()) {
-			pool->extractRoutes(indiv);
-			pool->recordSolutionFitness(indiv->fit);
-		}
-	}
-
 	if (isObtainNewPop)
 		return index;
 	else
@@ -344,7 +354,15 @@ int popManager::addIndividual(Individual *indiv, int rankPop, bool isInitial, Ro
 void popManager::addInElitePop(Individual * /*indiv*/){
 }
 Individual * popManager::selectionParentSolution(Individual *exist, int rankPop){
+	if (rankPop < 0 || rankPop >= static_cast<int>(popula.size())) {
+		throw std::out_of_range(
+			"parent selection population index is out of range");
+	}
 	SubPopulation & subpop = popula[rankPop];
+	if (subpop.empty()) {
+		throw std::runtime_error(
+			"cannot select a parent from an empty population");
+	}
 	updateBiasedFitnesses(subpop);
 
 	int rand1,rand2;
@@ -353,8 +371,16 @@ Individual * popManager::selectionParentSolution(Individual *exist, int rankPop)
 		target = subpop[0];
 		return target;
 	}
+	if (subpop.size() == 2 && exist != nullptr) {
+		if (subpop[0] == exist)
+			return subpop[1];
+		if (subpop[1] == exist)
+			return subpop[0];
+	}
 	int max_idx = (int)subpop.size() - 1;
-	while(1){
+	const int maximumAttempts =
+		std::max(16, static_cast<int>(subpop.size()) * 4);
+	for (int attempt = 0; attempt < maximumAttempts; ++attempt) {
 		rand1 = RandomInt(0, max_idx); // 使用 basic.h 中的随机函数
 		rand2 = RandomInt(0, max_idx);
 		while (rand1 == rand2) rand2 = RandomInt(0, max_idx);
@@ -363,8 +389,27 @@ Individual * popManager::selectionParentSolution(Individual *exist, int rankPop)
 			target = subpop[rand1];
 		else
 			target = subpop[rand2];
-			
-		if (target != exist) break;
+
+		if (target != exist)
+			return target;
+	}
+
+	// Rejection sampling above preserves the historical tournament behavior
+	// in normal runs. A deterministic fallback guarantees progress even when
+	// the excluded parent wins every sampled tournament.
+	target = nullptr;
+	for (Individual* candidate : subpop) {
+		if (candidate == exist)
+			continue;
+		if (target == nullptr ||
+			candidate->biasedFit < target->biasedFit) {
+			target = candidate;
+		}
+	}
+	if (target == nullptr) {
+		throw std::logic_error(
+			"parent selection found no candidate distinct from the "
+			"excluded parent");
 	}
 	return target;
 }
@@ -547,27 +592,37 @@ int popManager::getWorstResidentIndex() {
     return worstIdx;
 }
 
-int popManager::injectSPSolution(
+SpInjectionResult popManager::injectSPSolution(
         std::unique_ptr<Individual> ownedSpIndiv,
         RoutePool* pool) {
     if (!ownedSpIndiv) {
-        return -1;
+        return {};
     }
     Individual* spIndiv = ownedSpIndiv.get();
+    spIndiv->decideFeasible();
     if (!spIndiv->isFeasible) {
-        return -1; 
+        return {};
     }
+    spIndiv->isRight();
 
     // Route-pool admission is independent from population admission. Even a
     // population duplicate or a rejected depot configuration may contain new
     // columns created by the post-SP local search.
-    if (pool != nullptr) {
-        pool->extractRoutes(spIndiv);
-    }
+    if (pool != nullptr)
+        pool->submitFeasibleIndividual(spIndiv);
     
     if (data->no_capacity_location || data->numLocConfiguration == 0) {
-        addIndividual(spIndiv, 0, false, pool);
-        return -1; 
+        // This SP candidate has already crossed the route-submission
+        // boundary above.
+        for (Individual* existing : popula[0]) {
+            if (data->equalTwoVar(existing->fit, spIndiv->fit) &&
+                existing->hasSameRouteStructure(*spIndiv)) {
+                return {};
+            }
+        }
+        addIndividual(spIndiv, 0, false, nullptr);
+        return {
+            SpInjectionDisposition::AdmittedExisting, 0};
     }
 
     // Derive the depot configuration and its lookup keys.
@@ -596,25 +651,22 @@ int popManager::injectSPSolution(
         bestIndivRestart->initilization();
         copyAllData(bestIndivRestart, spIndiv);
         data->nbIterNonImpro = 0;
-        data->meetBestTime =
-            static_cast<double>(clock()) /
-            static_cast<double>(CLOCKS_PER_SEC);
     }
     if (spIndiv->fit + Min < global->fit) {
         global->initilization();
         copyAllData(global, spIndiv);
-        data->meetBestTime =
-            static_cast<double>(clock()) /
-            static_cast<double>(CLOCKS_PER_SEC);
+        data->recordGlobalIncumbent();
     }
 
     if (matchIndex != -1) {
-        // Reject equal-objective clones before computing diversity distances.
+        // Equal objective values are common on rounded instances. Reject only
+        // an exact route/depot structural clone before computing diversity.
         for (Individual* existingIndiv : popula[matchIndex]) {
-            if (existingIndiv->fit + Min > spIndiv->fit && existingIndiv->fit - Min < spIndiv->fit) {
+            if (data->equalTwoVar(existingIndiv->fit, spIndiv->fit) &&
+                existingIndiv->hasSameRouteStructure(*spIndiv)) {
                 std::cout << "[SP Inject] rejected duplicate in resident "
                           << matchIndex << std::endl;
-                return -1;
+                return {};
             }
         }
 
@@ -638,17 +690,13 @@ int popManager::injectSPSolution(
             matchedPopulation.begin() + insertionIndex,
             ownedSpIndiv.release());
 
-        // Route extraction already happened above; update the admission mean
-        // only after successful population insertion.
-        if (pool != nullptr) {
-            pool->recordSolutionFitness(spIndiv->fit);
-        }
-        
         if ((int)matchedPopulation.size() > data->popMin) {
             updateBiasedFitnesses(matchedPopulation);
             removeWorstBiasedFitness(matchedPopulation);
         }
-        return -1;
+        return {
+            SpInjectionDisposition::AdmittedExisting,
+            matchIndex};
     } else {
         // Prefer an empty slot; otherwise identify the resident with the
         // highest mean objective.
@@ -711,18 +759,15 @@ int popManager::injectSPSolution(
 
             popula[worstIdx].push_back(ownedSpIndiv.release());
 
-            // Keep post-local-search SP columns available for future SP calls.
-            if (pool != nullptr) {
-                pool->recordSolutionFitness(spIndiv->fit);
-            }
-
-            return worstIdx;
+            return {
+                SpInjectionDisposition::AdmittedNewConfiguration,
+                worstIdx};
         } else {
             std::cout << "[SP Inject] rejected (candidate=" << std::fixed
                       << spIndiv->fit
                       << ", required_below=" << bestFitInWorstPop << ")"
                       << std::endl;
-            return -1;
+            return {};
         }
     }
 }

@@ -11,6 +11,12 @@ struct StandaloneRoute {
     int locId = -1;
     double routeCost = 0.0;
     int totalLoad = 0;
+    // Temporal aggregates are metadata only: SP feasibility is guaranteed by
+    // admitting complete, independently feasible columns into the pool.
+    double returnTime = 0.0;
+    double totalWaitingTime = 0.0;
+    bool temporalFeasible = true;
+    int temporalViolationCustomer = -1;
     std::vector<int> sequence;
 
     bool operator==(const StandaloneRoute& other) const noexcept {

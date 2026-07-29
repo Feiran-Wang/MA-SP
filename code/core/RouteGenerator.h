@@ -18,6 +18,8 @@
 #include "RepairProcedure.h"
 #include "mutation.h"
 #include "RoutePool.h"
+#include "AdaptiveSearchAllocator.h"
+#include "PopulationIncubationGuard.h"
 #include <vector>
 #include <memory>
 
@@ -32,12 +34,16 @@ public:
     
     // 2. Generation & Heuristics
     int selectsubPop(int subpop1);
+    static int deterministicSubpopulationFallback(
+        const std::vector<int>& eligible,
+        int excludedPopulation,
+        const std::vector<std::size_t>& populationSizes);
     int generateEAXChildren(int subPop1, int subPop2);
     bool refineChild(int childIndex); 
     
     // 3. Integration & Incumbent
     void integrateToPopulation(int childIndex, RoutePool* pool);
-    void injectIncumbent(
+    SpInjectionResult injectIncumbent(
         std::unique_ptr<Individual> spIndiv,
         RoutePool* pool);
     
@@ -46,6 +52,17 @@ public:
     void checkStagnationAndRestart(RoutePool* pool);
     void checkSubPopReduction();
     bool checkStopCondition();
+    bool hasFeasibleIncumbent() const noexcept;
+    const Individual* globalIncumbent() const noexcept;
+    void updateDualGuidance(
+        const std::vector<double>& customerDuals);
+    void reportSearchOutcome(
+        int firstPopulationIndex,
+        int secondPopulationIndex,
+        double objectiveImprovement,
+        double cpuSeconds,
+        std::size_t newColumns);
+    void reportSpImprovement(bool improved);
     void printProgress(int childIndex);
 
     // Public members strictly needed for state access
@@ -69,9 +86,20 @@ private:
     Individual * ma;
 
     std::vector<double> avgCostPop;
+    hgasp::AdaptiveSearchAllocator searchAllocator;
+    int currentMutationProbabilityPercent = 15;
+    bool spJustImproved = false;
     
     // Helper function moved from solution
     void evolvePop(int rankPop, int &count, RoutePool* pool);
+    bool timeLimitReached() const noexcept;
+    bool initializationTimeLimitReached() const noexcept;
+    void incubatePopulation(
+        int populationIndex,
+        RoutePool* pool,
+        const char* source);
+    void registerPopulationConfiguration(int populationIndex);
+    double populationDiversity(int populationIndex) const;
     void outputprocess(Individual *indiv);
 };
 

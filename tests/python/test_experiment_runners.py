@@ -6,7 +6,9 @@ import copy
 import io
 import json
 import os
+import signal
 import stat
+import subprocess
 import sys
 import tempfile
 import threading
@@ -81,6 +83,7 @@ def provenance() -> dict:
 def manifest() -> dict:
     return {
         "schema_version": run_one.SCHEMA_VERSION,
+        "problem_mode": "clrp",
         "name": "test_matrix",
         "binary": "bin/solver",
         "output_root": "artifacts",
@@ -89,6 +92,7 @@ def manifest() -> dict:
         "limits": {"time_seconds": 1, "iterations": 1},
         "resources": {"workers": 1, "gurobi_threads": 1},
         "sp": sp_config(),
+        "validation": {"required": False},
         "environment": {},
     }
 
@@ -101,6 +105,246 @@ def test_topology(
 
 
 class ValidationTests(unittest.TestCase):
+    def test_schema_v2_is_accepted_as_clrp(self) -> None:
+        value = manifest()
+        value["schema_version"] = 2
+        del value["problem_mode"]
+        run_matrix.validate_manifest(value)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            manifest_path = root / "manifest.json"
+            manifest_path.write_text("{}", encoding="utf-8")
+            with mock.patch.object(
+                run_one,
+                "detect_cpu_topology",
+                return_value=test_topology(((0,),)),
+            ):
+                resolved = run_matrix.resolve_manifest(
+                    value, manifest_path, root, None, None, None
+                )
+        self.assertEqual(resolved["problem_mode"], "clrp")
+        self.assertEqual(resolved["source_schema_version"], 2)
+
+    def test_clrp_tw_requires_independent_validation(self) -> None:
+        value = manifest()
+        value["problem_mode"] = "clrp-tw"
+        with self.assertRaisesRegex(
+            run_one.ExperimentError, "validation.required=true"
+        ):
+            run_matrix.validate_manifest(value)
+        value["validation"]["required"] = True
+        value["instances"] = [
+            {
+                "path": "instance.txt",
+                "reference": {"status": "unknown", "value": None},
+            }
+        ]
+        run_matrix.validate_manifest(value)
+
+    def test_run_config_cannot_bypass_tw_validation(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            binary = root / "solver"
+            instance = root / "instance.txt"
+            make_executable(binary, "exit 0\n")
+            instance.write_text("placeholder", encoding="utf-8")
+            run_dir = root / "run"
+            config = run_config(root, binary, instance, run_dir)
+            config["problem_mode"] = "clrp-tw"
+            config["validation"] = {"required": False}
+            with self.assertRaisesRegex(
+                run_one.ExperimentError, "validation.required=true"
+            ):
+                run_one._validate_run_config(config, run_dir)
+
+    def test_output_paths_are_coherent_and_cannot_overwrite_inputs(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            binary = root / "solver"
+            instance = root / "instance.json"
+            make_executable(binary, "exit 0\n")
+            instance.write_text("{}", encoding="utf-8")
+            run_dir = root / "run"
+
+            wrong_json = run_config(root, binary, instance, run_dir)
+            wrong_json["solution_json"] = str(run_dir / "different.json")
+            with self.assertRaisesRegex(
+                run_one.ExperimentError, "sibling named solution.json"
+            ):
+                run_one._validate_run_config(wrong_json, run_dir)
+
+            overwrites_input = run_config(root, binary, instance, run_dir)
+            overwrites_input["solution"] = str(instance)
+            overwrites_input["solution_json"] = str(
+                instance.with_name("solution.json")
+            )
+            with self.assertRaisesRegex(
+                run_one.ExperimentError, "must not overwrite instance"
+            ):
+                run_one._validate_run_config(overwrites_input)
+
+            outside_run = run_config(root, binary, instance, run_dir)
+            outside_run["solution"] = str(root / "solution.txt")
+            outside_run["solution_json"] = str(root / "solution.json")
+            with self.assertRaisesRegex(
+                run_one.ExperimentError, "run_dir/solution.txt"
+            ):
+                run_one._validate_run_config(outside_run, run_dir)
+
+    def test_default_validation_tolerance_matches_cpp_tw_evaluator(self) -> None:
+        value = manifest()
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            manifest_path = root / "manifest.json"
+            manifest_path.write_text("{}", encoding="utf-8")
+            with mock.patch.object(
+                run_one,
+                "detect_cpu_topology",
+                return_value=test_topology(((0,),)),
+            ):
+                resolved = run_matrix.resolve_manifest(
+                    value, manifest_path, root, None, None, None
+                )
+        self.assertEqual(
+            resolved["validation"]["absolute_tolerance"], 1e-9
+        )
+
+    def test_run_target_fields_are_strictly_validated(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            binary = root / "solver"
+            instance = root / "instance.json"
+            make_executable(binary, "exit 0\n")
+            instance.write_text("{}", encoding="utf-8")
+            run_dir = root / "run"
+
+            for field, invalid, message in (
+                ("best_known", -1.0, "finite and nonnegative"),
+                ("is_optimal", 1, "must be boolean"),
+            ):
+                with self.subTest(field=field):
+                    config = run_config(root, binary, instance, run_dir)
+                    config[field] = invalid
+                    with self.assertRaisesRegex(
+                        run_one.ExperimentError, message
+                    ):
+                        run_one._validate_run_config(config, run_dir)
+
+            config = run_config(root, binary, instance, run_dir)
+            config["is_optimal"] = True
+            with self.assertRaisesRegex(
+                run_one.ExperimentError, "positive best_known"
+            ):
+                run_one._validate_run_config(config, run_dir)
+
+            config = run_config(root, binary, instance, run_dir)
+            config["best_known"] = 123.0
+            config["is_optimal"] = True
+            config["stop_at_reference"] = False
+            with self.assertRaisesRegex(
+                run_one.ExperimentError,
+                "is_optimal must be false",
+            ):
+                run_one._validate_run_config(config, run_dir)
+
+    def test_typed_reference_normalizes_without_fake_bks(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            instance = root / "instance.txt"
+            instance.write_text("test", encoding="utf-8")
+            normalized = run_matrix._normalize_instance(
+                {
+                    "path": str(instance),
+                    "reference": {"status": "unknown", "value": None},
+                },
+                0,
+                root,
+            )
+        self.assertEqual(normalized["reference"]["status"], "unknown")
+        self.assertEqual(normalized["best_known"], 0.0)
+        self.assertFalse(normalized["is_optimal"])
+        self.assertTrue(normalized["stop_at_reference"])
+
+    def test_optimal_reference_can_remain_metadata_without_early_stop(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            instance = root / "instance.txt"
+            instance.write_text("test", encoding="utf-8")
+            normalized = run_matrix._normalize_instance(
+                {
+                    "path": str(instance),
+                    "reference": {"status": "optimal", "value": 123.0},
+                    "stop_at_reference": False,
+                },
+                0,
+                root,
+            )
+        self.assertEqual(normalized["reference"]["status"], "optimal")
+        self.assertEqual(normalized["best_known"], 123.0)
+        self.assertFalse(normalized["is_optimal"])
+        self.assertFalse(normalized["stop_at_reference"])
+
+    def test_stop_at_reference_controls_expanded_solver_argv(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            instance = root / "instance.txt"
+            instance.write_text("test", encoding="utf-8")
+            manifest_path = root / "manifest.json"
+            manifest_path.write_text("{}", encoding="utf-8")
+
+            def expanded(stop_at_reference: bool | None) -> tuple[dict, list[str]]:
+                value = manifest()
+                instance_config = {
+                    "path": str(instance),
+                    "reference": {"status": "optimal", "value": 123.0},
+                }
+                if stop_at_reference is not None:
+                    instance_config["stop_at_reference"] = stop_at_reference
+                value["instances"] = [instance_config]
+                with mock.patch.object(
+                    run_one,
+                    "detect_cpu_topology",
+                    return_value=test_topology(((0,),)),
+                ):
+                    resolved = run_matrix.resolve_manifest(
+                        value, manifest_path, root, None, None, None
+                    )
+                config, _ = run_matrix.expand_runs(
+                    resolved, root / "experiment"
+                )[0]
+                return config, run_one.build_solver_command(config)
+
+            no_stop_config, no_stop_command = expanded(False)
+            default_config, default_command = expanded(None)
+
+        self.assertEqual(no_stop_config["reference"]["status"], "optimal")
+        self.assertFalse(no_stop_config["is_optimal"])
+        no_stop_solution_index = no_stop_command.index(
+            no_stop_config["solution"]
+        )
+        self.assertEqual(no_stop_command[no_stop_solution_index + 2], "0")
+
+        self.assertEqual(default_config["reference"]["status"], "optimal")
+        self.assertTrue(default_config["is_optimal"])
+        default_solution_index = default_command.index(
+            default_config["solution"]
+        )
+        self.assertEqual(default_command[default_solution_index + 2], "1")
+
+    def test_solver_command_appends_explicit_problem_mode(self) -> None:
+        config = {
+            "binary": "/solver",
+            "instance": "/instance",
+            "solution": "/solution",
+            "best_known": 0,
+            "is_optimal": False,
+            "limits": {"time_seconds": 1, "iterations": 2},
+            "seed": 3,
+            "problem_mode": "clrp-tw",
+        }
+        command = run_one.build_solver_command(config)
+        self.assertEqual(command[-2:], ["--problem-mode", "clrp-tw"])
+
     def test_zero_time_limit_means_unlimited(self) -> None:
         value = manifest()
         value["limits"]["time_seconds"] = 0
@@ -176,6 +420,15 @@ class ValidationTests(unittest.TestCase):
         self.assertEqual(metadata["available_physical_core_count"], 2)
         self.assertEqual(
             metadata["physical_core_affinity_groups"], [[1], [2, 3]]
+        )
+        self.assertRegex(metadata["hardware_id"], r"^sha256:[0-9a-f]{64}$")
+        self.assertEqual(
+            metadata["hardware_identity"]["available_physical_core_count"], 2
+        )
+        self.assertEqual(metadata["hardware_identity"]["threads_per_core"], 2)
+        self.assertEqual(
+            run_one.collect_platform_provenance(topology)["hardware_id"],
+            metadata["hardware_id"],
         )
 
     def test_default_worker_limit_uses_physical_cores(self) -> None:
@@ -318,6 +571,7 @@ class ValidationTests(unittest.TestCase):
             runs = run_matrix.expand_runs(resolved, root / "runs")
 
         self.assertEqual(resolved["sp"]["trigger_offset"], "deterministic")
+        self.assertFalse(resolved["sp"]["require_success"])
         for config, _ in runs:
             offset = config["sp"]["trigger_offset"]
             self.assertIsInstance(offset, int)
@@ -336,6 +590,39 @@ class ValidationTests(unittest.TestCase):
         self.assertEqual(overrides["HGASP_SP_THREADS"], "2")
         self.assertEqual(overrides["HGASP_SP_TRIGGER_OFFSET"], "0")
         self.assertEqual(overrides["HGASP_SP_WORK_LIMIT"], "0")
+        self.assertEqual(overrides["HGASP_SP_LOCAL_ENABLED"], "1")
+        self.assertEqual(
+            overrides["HGASP_SP_LOCAL_TRIGGER_FREQUENCY"], "10000"
+        )
+        self.assertEqual(
+            overrides["HGASP_SP_LOCAL_TIME_LIMIT_SECONDS"], "30"
+        )
+        self.assertEqual(
+            overrides["HGASP_SP_ADAPTIVE_TRIGGER_ENABLED"], "1"
+        )
+        self.assertEqual(
+            overrides["HGASP_SP_ADAPTIVE_LOCAL_NEW_COLUMNS"], "250"
+        )
+        self.assertEqual(
+            overrides["HGASP_SP_LP_DUAL_FEEDBACK_ENABLED"], "1"
+        )
+        self.assertEqual(
+            overrides["HGASP_SP_PERSISTENT_LP_ENABLED"], "1"
+        )
+        self.assertEqual(
+            overrides["HGASP_SP_SOLUTION_POOL_SIZE"], "5"
+        )
+        self.assertEqual(
+            overrides["HGASP_SP_DIVERSE_INJECTION_COUNT"], "3"
+        )
+        self.assertEqual(
+            overrides["HGASP_ADAPTIVE_SEARCH_ALLOCATION_ENABLED"],
+            "1",
+        )
+        self.assertEqual(
+            overrides["HGASP_ADAPTIVE_MUTATION_MAXIMUM_PERCENT"],
+            "40",
+        )
         self.assertEqual(overrides["HGASP_SP_CLIENT_LOG_LEVEL"], "1")
         self.assertEqual(
             overrides["HGASP_SP_ENVIRONMENT_MAX_ATTEMPTS"], "3"
@@ -377,8 +664,210 @@ class ValidationTests(unittest.TestCase):
                 with self.assertRaises(run_one.ExperimentError):
                     run_one.validate_sp_config(changed)
 
+        invalid_boolean = sp_config()
+        invalid_boolean["require_success"] = 1
+        with self.assertRaisesRegex(
+            run_one.ExperimentError, "sp.require_success must be boolean"
+        ):
+            run_one.validate_sp_config(invalid_boolean)
+
 
 class ExecutionTests(unittest.TestCase):
+    def test_signal_handlers_request_idempotent_cancellation(self) -> None:
+        handled = [signal.SIGINT, signal.SIGTERM]
+        if hasattr(signal, "SIGHUP"):
+            handled.append(signal.SIGHUP)
+        for signum in handled:
+            with self.subTest(signal=signal.Signals(signum).name):
+                cancellation = threading.Event()
+                previous = signal.getsignal(signum)
+
+                with run_one.cancellation_signal_handlers(
+                    cancellation
+                ) as state:
+                    handler = signal.getsignal(signum)
+                    self.assertTrue(callable(handler))
+                    handler(signum, None)
+                    self.assertTrue(cancellation.is_set())
+                    self.assertEqual(
+                        state.name, signal.Signals(signum).name
+                    )
+                    # A repeated signal must not break child reaping.
+                    handler(signum, None)
+
+                self.assertEqual(signal.getsignal(signum), previous)
+
+    def test_run_records_exact_child_cpu_and_separate_wall_time(self) -> None:
+        if os.name != "posix" or not hasattr(os, "wait4"):
+            self.skipTest("per-child wait4 resource usage is unavailable")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            binary = root / "cpu-solver"
+            instance = root / "instance.json"
+            instance.write_text("{}", encoding="utf-8")
+            make_executable(
+                binary,
+                (
+                    "i=0\n"
+                    "while [ \"$i\" -lt 20000 ]; do i=$((i + 1)); done\n"
+                    'printf "valid solution\\n" > "$2"\n'
+                ),
+            )
+            run_dir = root / "run"
+            config = run_config(root, binary, instance, run_dir)
+
+            result = run_one.execute_run(
+                config, run_dir, root, shared_provenance=provenance()
+            )
+            process_status = json.loads(
+                Path(result["files"]["process_status"]).read_text()
+            )
+
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["duration_basis"], "process_cpu")
+        self.assertEqual(result["duration_scope"], "whole_child_process")
+        self.assertIsInstance(result["cpu_user_seconds"], float)
+        self.assertIsInstance(result["cpu_system_seconds"], float)
+        self.assertGreater(result["cpu_time_seconds"], 0.0)
+        self.assertEqual(
+            result["duration_seconds"], result["cpu_time_seconds"]
+        )
+        self.assertGreaterEqual(result["wall_duration_seconds"], 0.0)
+        self.assertGreater(process_status["cpu_seconds"], 0.0)
+        self.assertAlmostEqual(
+            result["cpu_time_seconds"],
+            process_status["cpu_seconds"],
+            delta=0.01,
+        )
+
+    def test_required_sp_success_accepts_markers_across_attempt_logs(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            binary = root / "solver"
+            instance = root / "instance.json"
+            instance.write_text("{}", encoding="utf-8")
+            make_executable(
+                binary,
+                (
+                    'printf "[SP Result] status=OPTIMAL\\n'
+                    '[SP Success] injected\\n" '
+                    '> "$HGASP_LOG_DIR/hgasp.log"\n'
+                    'printf "valid solution\\n" > "$2"\n'
+                ),
+            )
+            run_dir = root / "run"
+            config = run_config(root, binary, instance, run_dir)
+            config["sp"]["require_success"] = True
+
+            result = run_one.execute_run(
+                config, run_dir, root, shared_provenance=provenance()
+            )
+
+        self.assertEqual(result["status"], "success")
+        assertion = result["sp_success_assertion"]
+        self.assertTrue(assertion["required"])
+        self.assertTrue(assertion["observed"])
+        self.assertTrue(assertion["result_status_marker_found"])
+        self.assertTrue(assertion["success_marker_found"])
+
+    def test_sp_success_scans_rotated_canonical_logs_without_stdout_duplicates(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            hgasp = root / "hgasp.log"
+            rotated = root / "hgasp.log.1"
+            stdout = root / "stdout.log"
+            first = b"[SP Result] status=OPTIMAL\n[SP Success]\n"
+            second = b"[SP Result] status=TIME_LIMIT\n[SP Success]\n"
+            rotated.write_bytes(first)
+            hgasp.write_bytes(second)
+            stdout.write_bytes(first + second)
+
+            evidence = run_one.inspect_sp_success_attempt(hgasp, stdout)
+
+        self.assertTrue(evidence["observed"])
+        self.assertEqual(evidence["result_count"], 2)
+        self.assertEqual(evidence["success_count"], 2)
+        self.assertEqual(
+            evidence["result_statuses"], ["OPTIMAL", "TIME_LIMIT"]
+        )
+        self.assertNotIn(str(stdout), evidence["checked_logs"])
+
+    def test_required_sp_success_fails_when_sp_never_runs(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            binary = root / "solver"
+            instance = root / "instance.json"
+            instance.write_text("{}", encoding="utf-8")
+            make_executable(
+                binary,
+                'printf "valid solution\\n" > "$2"\n',
+            )
+            run_dir = root / "run"
+            config = run_config(root, binary, instance, run_dir)
+            config["sp"]["require_success"] = True
+
+            result = run_one.execute_run(
+                config, run_dir, root, shared_provenance=provenance()
+            )
+
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["process_status"], "sp_assertion_failed")
+        self.assertFalse(result["sp_success_assertion"]["observed"])
+        self.assertIn("[SP Result] status=", result["error"])
+        self.assertIn("[SP Success]", result["error"])
+
+    def test_required_sp_success_rejects_any_gurobi_error(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            binary = root / "solver"
+            instance = root / "instance.json"
+            instance.write_text("{}", encoding="utf-8")
+            make_executable(
+                binary,
+                (
+                    'printf "[SP Result] status=GUROBI_ERROR\\n"\n'
+                    'printf "[SP Result] status=OPTIMAL\\n"\n'
+                    'printf "[SP Success] valid later call\\n"\n'
+                    'printf "valid solution\\n" > "$2"\n'
+                ),
+            )
+            run_dir = root / "run"
+            config = run_config(root, binary, instance, run_dir)
+            config["sp"]["require_success"] = True
+
+            result = run_one.execute_run(
+                config, run_dir, root, shared_provenance=provenance()
+            )
+
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["process_status"], "sp_assertion_failed")
+        assertion = result["sp_success_assertion"]
+        self.assertFalse(assertion["observed"])
+        self.assertEqual(assertion["failure_statuses"], ["GUROBI_ERROR"])
+        self.assertEqual(assertion["result_count"], 2)
+        self.assertEqual(assertion["success_count"], 1)
+
+    def test_required_validation_rejects_missing_solution_json(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            binary = root / "solver"
+            instance = root / "instance.txt"
+            instance.write_text("placeholder", encoding="utf-8")
+            make_executable(binary, 'printf "legacy solution\\n" > "$2"\n')
+            run_dir = root / "run"
+            config = run_config(root, binary, instance, run_dir)
+            config["problem_mode"] = "clrp-tw"
+            config["validation"] = {"required": True}
+
+            result = run_one.execute_run(
+                config, run_dir, root, shared_provenance=provenance()
+            )
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["validation_status"], "missing")
+        self.assertIn("solution.json is missing", result["error"])
+
     def test_solver_inherits_and_records_assigned_cpu_affinity(self) -> None:
         if not hasattr(os, "sched_getaffinity") or not hasattr(
             os, "sched_setaffinity"
@@ -476,6 +965,23 @@ class ExecutionTests(unittest.TestCase):
             )
             self.assertTrue(skipped["skipped"])
 
+            # A non-empty but altered artifact must never be trusted by resume.
+            Path(config["solution"]).write_text(
+                "tampered solution\n", encoding="utf-8"
+            )
+            recovered_from_tamper = run_one.execute_run(
+                config, run_dir, root, shared_provenance=provenance()
+            )
+            self.assertEqual(recovered_from_tamper["status"], "success")
+            self.assertEqual(recovered_from_tamper["attempt"], 3)
+            self.assertNotIn("skipped", recovered_from_tamper)
+            self.assertEqual(
+                recovered_from_tamper["provenance"]["hashes"][
+                    "solution_sha256"
+                ],
+                run_one.sha256_file(Path(config["solution"])),
+            )
+
     def test_dry_run_creates_no_artifacts(self) -> None:
         with tempfile.TemporaryDirectory(prefix="hgasp dry run ") as temporary:
             root = Path(temporary)
@@ -563,6 +1069,502 @@ class ExecutionTests(unittest.TestCase):
 
             self.assertEqual(result["status"], "interrupted")
             self.assertEqual(run_one.active_process_count(), 0)
+
+    def test_running_state_and_bounded_heartbeat_are_persisted(self) -> None:
+        if os.name != "posix":
+            self.skipTest("POSIX supervisor control pipes are unavailable")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            binary = root / "slow-solver"
+            instance = root / "instance.json"
+            pid_file = root / "solver.pid"
+            instance.write_text("{}", encoding="utf-8")
+            make_executable(
+                binary,
+                (
+                    'printf "%s\\n" "$$" > "$PID_FILE"\n'
+                    "sleep 1\n"
+                    'printf "valid solution\\n" > "$2"\n'
+                ),
+            )
+            run_dir = root / "run"
+            config = run_config(root, binary, instance, run_dir)
+            config["environment"] = {"PID_FILE": str(pid_file)}
+
+            with mock.patch.object(
+                run_one, "SUPERVISOR_HEARTBEAT_SECONDS", 0.05
+            ), concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                future = pool.submit(
+                    run_one.execute_run,
+                    config,
+                    run_dir,
+                    root,
+                    False,
+                    provenance(),
+                )
+                run_path = run_dir / "run.json"
+                deadline = time.monotonic() + 3
+                live = None
+                heartbeat = None
+                while time.monotonic() < deadline:
+                    if run_path.is_file():
+                        live = json.loads(run_path.read_text())
+                        status_name = live.get("files", {}).get(
+                            "process_status"
+                        )
+                        if status_name and Path(status_name).is_file():
+                            heartbeat = json.loads(
+                                Path(status_name).read_text()
+                            )
+                            if heartbeat.get("sequence", 0) >= 2:
+                                break
+                    time.sleep(0.02)
+
+                self.assertIsNotNone(live)
+                self.assertEqual(live["status"], "running")
+                self.assertIsInstance(live["supervisor_pid"], int)
+                self.assertIsInstance(
+                    live["supervisor_process_group_id"], int
+                )
+                self.assertIsInstance(
+                    live["cpu_affinity"]["effective_logical_cpu_ids"], list
+                )
+                self.assertIsNotNone(heartbeat)
+                self.assertEqual(heartbeat["health"], "running")
+                self.assertIsInstance(heartbeat["solver_pid"], int)
+                self.assertIsInstance(
+                    heartbeat["solver_process_group_id"], int
+                )
+                self.assertIn("cpu_seconds", heartbeat)
+                self.assertIn("rss_bytes", heartbeat)
+                status_path = Path(live["files"]["process_status"])
+                first_size = status_path.stat().st_size
+                time.sleep(0.15)
+                second_size = status_path.stat().st_size
+                self.assertLess(first_size, 4096)
+                self.assertLess(second_size, 4096)
+                result = future.result(timeout=5)
+
+            self.assertEqual(result["status"], "success")
+            self.assertEqual(result["process_health"], "complete")
+
+    def test_run_lock_rejects_concurrent_writer(self) -> None:
+        if os.name != "posix":
+            self.skipTest("flock test requires POSIX")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            binary = root / "slow-solver"
+            instance = root / "instance.json"
+            instance.write_text("{}", encoding="utf-8")
+            make_executable(
+                binary,
+                "sleep 1\n"
+                'printf "valid solution\\n" > "$2"\n',
+            )
+            run_dir = root / "run"
+            config = run_config(root, binary, instance, run_dir)
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                future = pool.submit(
+                    run_one.execute_run,
+                    config,
+                    run_dir,
+                    root,
+                    False,
+                    provenance(),
+                )
+                deadline = time.monotonic() + 3
+                while (
+                    not (run_dir / "run.json").is_file()
+                    and time.monotonic() < deadline
+                ):
+                    time.sleep(0.02)
+                with self.assertRaisesRegex(
+                    run_one.ExperimentError, "already active"
+                ):
+                    run_one.execute_run(
+                        config,
+                        run_dir,
+                        root,
+                        shared_provenance=provenance(),
+                    )
+                result = future.result(timeout=5)
+
+            self.assertEqual(result["status"], "success")
+            self.assertEqual(result["attempt"], 1)
+
+    def test_sigkill_runner_triggers_supervisor_cleanup(self) -> None:
+        if os.name != "posix":
+            self.skipTest("SIGKILL supervisor test requires POSIX")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            binary = root / "solver"
+            instance = root / "instance.json"
+            pid_file = root / "solver-pids.txt"
+            instance.write_text("{}", encoding="utf-8")
+            make_executable(
+                binary,
+                (
+                    "trap '' TERM\n"
+                    "sh -c 'trap \"\" TERM; "
+                    "while :; do sleep 1; done' &\n"
+                    "child=$!\n"
+                    'printf "%s %s\\n" "$$" "$child" > "$PID_FILE"\n'
+                    'wait "$child"\n'
+                ),
+            )
+            output_root = root / "output"
+            value = manifest()
+            value["binary"] = str(binary)
+            value["output_root"] = str(output_root)
+            value["instances"] = [{"path": str(instance)}]
+            value["environment"] = {"PID_FILE": str(pid_file)}
+            manifest_path = root / "manifest.json"
+            manifest_path.write_text(json.dumps(value), encoding="utf-8")
+
+            runner = subprocess.Popen(
+                [
+                    sys.executable,
+                    str(RUNNER_DIR / "run_matrix.py"),
+                    str(manifest_path),
+                ],
+                cwd=str(REPO_ROOT),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            deadline = time.monotonic() + 10
+            while not pid_file.is_file() and time.monotonic() < deadline:
+                if runner.poll() is not None:
+                    break
+                time.sleep(0.02)
+            self.assertTrue(pid_file.is_file())
+            solver_pid, _child_pid = (
+                int(value) for value in pid_file.read_text().split()
+            )
+
+            runner.kill()
+            runner.communicate(timeout=5)
+            deadline = time.monotonic() + 8
+            while (
+                run_one._process_group_has_live_members(solver_pid)
+                and time.monotonic() < deadline
+            ):
+                time.sleep(0.05)
+            self.assertFalse(
+                run_one._process_group_has_live_members(solver_pid)
+            )
+
+            experiment_root = output_root / "test_matrix"
+            run_dir = (
+                experiment_root / "runs" / "instance" / "seed_0"
+            )
+            status_path = next(
+                (run_dir / "logs").glob("attempt_*/process.status.json")
+            )
+            deadline = time.monotonic() + 5
+            status = json.loads(status_path.read_text())
+            while (
+                status.get("health") not in ("complete", "cleanup_failed")
+                and time.monotonic() < deadline
+            ):
+                time.sleep(0.05)
+                status = json.loads(status_path.read_text())
+            self.assertEqual(status["health"], "complete")
+            self.assertEqual(status["reason"], "parent_control_eof")
+            deadline = time.monotonic() + 5
+            while True:
+                try:
+                    with run_one.CrossProcessFileLock(
+                        experiment_root / ".matrix.lock", "recovery check"
+                    ), run_one.CrossProcessFileLock(
+                        run_dir / ".run.lock", "run recovery check"
+                    ):
+                        break
+                except run_one.ExperimentError:
+                    if time.monotonic() >= deadline:
+                        raise
+                    time.sleep(0.05)
+
+    def test_matrix_lock_rejects_duplicate_invocation(self) -> None:
+        if os.name != "posix":
+            self.skipTest("flock test requires POSIX")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            binary = root / "solver"
+            instance = root / "instance.json"
+            pid_file = root / "launches.txt"
+            instance.write_text("{}", encoding="utf-8")
+            make_executable(
+                binary,
+                (
+                    'printf "%s\\n" "$$" >> "$PID_FILE"\n'
+                    "sleep 1\n"
+                    'printf "valid solution\\n" > "$2"\n'
+                ),
+            )
+            output_root = root / "output"
+            value = manifest()
+            value["binary"] = str(binary)
+            value["output_root"] = str(output_root)
+            value["instances"] = [{"path": str(instance)}]
+            value["environment"] = {"PID_FILE": str(pid_file)}
+            manifest_path = root / "manifest.json"
+            manifest_path.write_text(json.dumps(value), encoding="utf-8")
+            command = [
+                sys.executable,
+                str(RUNNER_DIR / "run_matrix.py"),
+                str(manifest_path),
+            ]
+
+            first = subprocess.Popen(
+                command,
+                cwd=str(REPO_ROOT),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            deadline = time.monotonic() + 5
+            while not pid_file.is_file() and time.monotonic() < deadline:
+                time.sleep(0.02)
+            self.assertTrue(pid_file.is_file())
+            duplicate = subprocess.run(
+                command,
+                cwd=str(REPO_ROOT),
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+            stdout, stderr = first.communicate(timeout=10)
+
+            self.assertEqual(duplicate.returncode, 2)
+            self.assertIn("already active", duplicate.stderr)
+            self.assertEqual(first.returncode, 0, stdout + stderr)
+            self.assertEqual(len(pid_file.read_text().splitlines()), 1)
+            matrix_status_path = (
+                output_root / "test_matrix" / "matrix.status.json"
+            )
+            matrix_status = json.loads(matrix_status_path.read_text())
+            self.assertEqual(matrix_status["future_states"]["done"], 1)
+            self.assertLess(matrix_status_path.stat().st_size, 16384)
+
+    def test_normal_leader_exit_cleans_background_process_group_member(
+        self,
+    ) -> None:
+        if os.name != "posix":
+            self.skipTest("POSIX process-group signals are unavailable")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            binary = root / "solver"
+            instance = root / "instance.json"
+            pid_file = root / "solver-pids.txt"
+            instance.write_text("{}", encoding="utf-8")
+            make_executable(
+                binary,
+                (
+                    "sleep 30 &\n"
+                    "child=$!\n"
+                    'printf "%s %s\\n" "$$" "$child" > "$PID_FILE"\n'
+                    'printf "valid solution\\n" > "$2"\n'
+                    "exit 0\n"
+                ),
+            )
+            run_dir = root / "run"
+            config = run_config(root, binary, instance, run_dir)
+            config["environment"] = {"PID_FILE": str(pid_file)}
+
+            result = run_one.execute_run(
+                config,
+                run_dir,
+                root,
+                shared_provenance=provenance(),
+            )
+
+            leader_pid, child_pid = (
+                int(value) for value in pid_file.read_text().split()
+            )
+            self.assertEqual(result["status"], "success")
+            self.assertEqual(
+                result["process_group_cleanup"]["status"], "complete"
+            )
+            self.assertTrue(
+                result["process_group_cleanup"]["confirmed"]
+            )
+            self.assertEqual(
+                result["process_group_cleanup"]["process_group_id"],
+                leader_pid,
+            )
+            self.assertEqual(run_one.active_process_count(), 0)
+            self.assertFalse(
+                run_one._process_group_has_live_members(leader_pid)
+            )
+
+            # A zombie has already stopped and consumes no solver resources;
+            # the container's init process may reap it shortly afterwards.
+            child_stat = Path(f"/proc/{child_pid}/stat")
+            if child_stat.is_file():
+                self.assertEqual(
+                    child_stat.read_text(encoding="utf-8").split()[2],
+                    "Z",
+                )
+
+    def test_unconfirmed_group_cleanup_cannot_report_success(self) -> None:
+        if os.name != "posix":
+            self.skipTest("POSIX process-group signals are unavailable")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            binary = root / "solver"
+            instance = root / "instance.json"
+            instance.write_text("{}", encoding="utf-8")
+            make_executable(
+                binary,
+                (
+                    "sleep 30 &\n"
+                    'printf "valid solution\\n" > "$2"\n'
+                    "exit 0\n"
+                ),
+            )
+            run_dir = root / "run"
+            config = run_config(root, binary, instance, run_dir)
+
+            with mock.patch.object(
+                run_one,
+                "_managed_process_is_fully_stopped",
+                return_value=False,
+            ), mock.patch.object(
+                run_one,
+                "_wait_for_process_group_exit",
+                return_value=False,
+            ):
+                result = run_one.execute_run(
+                    config,
+                    run_dir,
+                    root,
+                    shared_provenance=provenance(),
+                )
+
+            self.assertEqual(result["status"], "failed")
+            self.assertEqual(result["process_status"], "cleanup_failed")
+            self.assertEqual(
+                result["process_group_cleanup"]["status"], "failed"
+            )
+            self.assertFalse(
+                result["process_group_cleanup"]["confirmed"]
+            )
+            self.assertIn("TERM and KILL", result["error"])
+
+            # The mocked failed confirmation deliberately retains the
+            # registration for a later matrix cleanup pass. The real KILL has
+            # already stopped the temporary child, so release the test-only
+            # bookkeeping entry after checking that behavior.
+            with run_one._ACTIVE_PROCESS_LOCK:
+                retained = tuple(run_one._ACTIVE_PROCESSES.values())
+            self.assertEqual(len(retained), 1)
+            self.assertTrue(
+                run_one._wait_for_process_group_exit(
+                    retained[0], time.monotonic() + 2.0
+                )
+            )
+            run_one._unregister_process(retained[0].process)
+
+    def test_sigterm_matrix_writes_summary_and_leaves_no_live_solver(self) -> None:
+        if os.name != "posix":
+            self.skipTest("POSIX process-group signals are unavailable")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            binary = root / "solver"
+            instance = root / "instance.json"
+            pid_file = root / "solver-pids.txt"
+            term_file = root / "solver-received-term.txt"
+            instance.write_text("{}", encoding="utf-8")
+            make_executable(
+                binary,
+                (
+                    "trap 'printf received > \"$TERM_FILE\"; exit 42' TERM\n"
+                    "sh -c 'trap \"\" TERM; "
+                    "while :; do sleep 1; done' &\n"
+                    "child=$!\n"
+                    'printf "%s %s\\n" "$$" "$child" > "$PID_FILE"\n'
+                    'wait "$child"\n'
+                ),
+            )
+            output_root = root / "output"
+            value = manifest()
+            value["binary"] = str(binary)
+            value["output_root"] = str(output_root)
+            value["instances"] = [{"path": str(instance)}]
+            value["environment"] = {
+                "PID_FILE": str(pid_file),
+                "TERM_FILE": str(term_file),
+            }
+            manifest_path = root / "manifest.json"
+            manifest_path.write_text(json.dumps(value), encoding="utf-8")
+
+            runner = subprocess.Popen(
+                [
+                    sys.executable,
+                    str(RUNNER_DIR / "run_matrix.py"),
+                    str(manifest_path),
+                ],
+                cwd=str(REPO_ROOT),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            deadline = time.monotonic() + 10
+            while not pid_file.is_file() and time.monotonic() < deadline:
+                if runner.poll() is not None:
+                    break
+                time.sleep(0.02)
+            self.assertTrue(
+                pid_file.is_file(),
+                runner.communicate(timeout=2)[1]
+                if runner.poll() is not None
+                else "solver did not launch",
+            )
+            solver_pids = [
+                int(value) for value in pid_file.read_text().split()
+            ]
+
+            runner.send_signal(signal.SIGTERM)
+            stdout, stderr = runner.communicate(timeout=15)
+
+            self.assertEqual(runner.returncode, 128 + signal.SIGTERM, stderr)
+            summary_path = output_root / "test_matrix" / "summary.json"
+            self.assertTrue(summary_path.is_file(), stdout + stderr)
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+            self.assertTrue(summary["interrupted"])
+            self.assertEqual(summary["interruption"]["signal"], "SIGTERM")
+            self.assertEqual(
+                summary["active_solver_processes_after_cleanup"], 0
+            )
+            self.assertTrue(summary["process_group_cleanup_confirmed"])
+            self.assertIsNone(summary["process_group_cleanup_error"])
+            run_path = (
+                output_root
+                / "test_matrix"
+                / "runs"
+                / "instance"
+                / "seed_0"
+                / "run.json"
+            )
+            run_result = json.loads(run_path.read_text(encoding="utf-8"))
+            self.assertEqual(run_result["status"], "interrupted")
+            self.assertEqual(
+                term_file.read_text(encoding="utf-8"), "received"
+            )
+
+            # A zombie is already dead and consumes no solver resources; it can
+            # briefly remain until the container's init process reaps it.
+            for solver_pid in solver_pids:
+                proc_stat = Path(f"/proc/{solver_pid}/stat")
+                if proc_stat.is_file():
+                    state = proc_stat.read_text(encoding="utf-8").split()[2]
+                    self.assertEqual(state, "Z")
+            self.assertFalse(
+                run_one._process_group_has_live_members(solver_pids[0])
+            )
 
 
 if __name__ == "__main__":

@@ -8,6 +8,7 @@
 
 #ifndef CROSSOVER_H_
 #define CROSSOVER_H_
+#include "EaxParentMode.h"
 #include "Individual.h"
 #include "read_data.h"
 #include "popManager.h"
@@ -38,6 +39,18 @@ public:
 	crossover(read_data * data,  popManager * popman);
 	virtual ~crossover();
 	bool gEAX(Individual *fa, Individual *ma, Individual *subPop, int &numSubPop);
+	static bool selectInitialEdgeSource(
+		bool fatherAvailable,
+		bool motherAvailable,
+		hgasp::EaxParentMode mode,
+		int randomBit);
+	// Returns 1 when the predecessor endpoint is open and -1 when the
+	// successor endpoint is open. preferredDirection may be 0, 1, or -1.
+	// A fully linked node is an invalid intermediate EAX endpoint.
+	static int selectOpenEndpoint(
+		bool predecessorOpen,
+		bool successorOpen,
+		int preferredDirection);
 	popManager * popman;
 private:
 	//
@@ -99,4 +112,3 @@ private:
 };
 
 #endif /* CROSSOVER_H_ */
-

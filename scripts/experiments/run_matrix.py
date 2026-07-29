@@ -12,12 +12,18 @@ import math
 import os
 import queue
 import shlex
+import signal
 import sys
 import threading
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 import run_one
+
+
+MATRIX_STATUS_INTERVAL_SECONDS = 30.0
+MATRIX_STATUS_ACTIVE_SAMPLE_LIMIT = 20
 
 
 class CpuAffinityPool:
@@ -166,6 +172,7 @@ def validate_manifest(manifest: Mapping[str, Any]) -> None:
         "manifest",
         (
             "schema_version",
+            "problem_mode",
             "name",
             "binary",
             "output_root",
@@ -175,7 +182,9 @@ def validate_manifest(manifest: Mapping[str, Any]) -> None:
             "limits",
             "resources",
             "sp",
+            "validation",
             "environment",
+            "fail_fast",
         ),
         (
             "schema_version",
@@ -189,9 +198,27 @@ def validate_manifest(manifest: Mapping[str, Any]) -> None:
             "sp",
         ),
     )
-    if manifest.get("schema_version") != run_one.SCHEMA_VERSION:
+    schema_version = manifest.get("schema_version")
+    if schema_version not in (
+        run_one.LEGACY_SCHEMA_VERSION,
+        run_one.SCHEMA_VERSION,
+    ):
         raise run_one.ExperimentError(
-            f"schema_version must be {run_one.SCHEMA_VERSION}"
+            f"schema_version must be {run_one.LEGACY_SCHEMA_VERSION} "
+            f"or {run_one.SCHEMA_VERSION}"
+        )
+    if schema_version == run_one.SCHEMA_VERSION:
+        if "problem_mode" not in manifest:
+            raise run_one.ExperimentError(
+                "schema v3 requires top-level problem_mode"
+            )
+    elif manifest.get("problem_mode", "clrp") != "clrp":
+        raise run_one.ExperimentError(
+            "schema v2 manifests are interpreted as problem_mode='clrp'"
+        )
+    if manifest.get("problem_mode", "clrp") not in run_one.PROBLEM_MODES:
+        raise run_one.ExperimentError(
+            "problem_mode must be either 'clrp' or 'clrp-tw'"
         )
     for field in ("name", "binary", "output_root"):
         if not isinstance(manifest.get(field), str) or not manifest[field]:
@@ -200,6 +227,10 @@ def validate_manifest(manifest: Mapping[str, Any]) -> None:
         raise run_one.ExperimentError(
             "name must contain only letters, digits, '.', '_', or '-'"
         )
+    if "fail_fast" in manifest and not isinstance(
+        manifest["fail_fast"], bool
+    ):
+        raise run_one.ExperimentError("fail_fast must be boolean")
     if "gurobi_home" in manifest and (
         not isinstance(manifest["gurobi_home"], str)
         or not manifest["gurobi_home"]
@@ -223,7 +254,15 @@ def validate_manifest(manifest: Mapping[str, Any]) -> None:
         _validate_keys(
             instance,
             f"instances[{index}]",
-            ("id", "path", "depot_config", "best_known", "is_optimal"),
+            (
+                "id",
+                "path",
+                "depot_config",
+                "best_known",
+                "is_optimal",
+                "reference",
+                "stop_at_reference",
+            ),
             ("path",),
         )
         if not isinstance(instance.get("path"), str) or not instance["path"]:
@@ -253,14 +292,103 @@ def validate_manifest(manifest: Mapping[str, Any]) -> None:
             raise run_one.ExperimentError(
                 f"instances[{index}].is_optimal must be boolean"
             )
+        if "stop_at_reference" in instance and not isinstance(
+            instance["stop_at_reference"], bool
+        ):
+            raise run_one.ExperimentError(
+                f"instances[{index}].stop_at_reference must be boolean"
+            )
         if "best_known" in instance and (
             isinstance(instance["best_known"], bool)
             or not isinstance(instance["best_known"], (int, float))
             or not math.isfinite(float(instance["best_known"]))
+            or float(instance["best_known"]) < 0
         ):
             raise run_one.ExperimentError(
-                f"instances[{index}].best_known must be finite and numeric"
+                f"instances[{index}].best_known must be finite and nonnegative"
             )
+        if instance.get("is_optimal", False) and float(
+            instance.get("best_known", 0)
+        ) <= 0:
+            raise run_one.ExperimentError(
+                f"instances[{index}].is_optimal=true requires a positive "
+                "best_known value"
+            )
+        reference = instance.get("reference")
+        if reference is not None:
+            if "best_known" in instance or "is_optimal" in instance:
+                raise run_one.ExperimentError(
+                    f"instances[{index}] cannot combine reference with "
+                    "legacy best_known/is_optimal"
+                )
+            if not isinstance(reference, Mapping):
+                raise run_one.ExperimentError(
+                    f"instances[{index}].reference must be an object"
+                )
+            _validate_keys(
+                reference,
+                f"instances[{index}].reference",
+                (
+                    "status",
+                    "value",
+                    "lower_bound",
+                    "source",
+                    "distance_policy",
+                ),
+                ("status",),
+            )
+            status = reference.get("status")
+            if status not in ("unknown", "bks", "optimal"):
+                raise run_one.ExperimentError(
+                    f"instances[{index}].reference.status must be "
+                    "unknown, bks, or optimal"
+                )
+            reference_value = reference.get("value")
+            if status == "unknown":
+                if reference_value is not None:
+                    raise run_one.ExperimentError(
+                        f"instances[{index}].reference.value must be null "
+                        "when status is unknown"
+                    )
+            elif (
+                isinstance(reference_value, bool)
+                or not isinstance(reference_value, (int, float))
+                or not math.isfinite(float(reference_value))
+                or float(reference_value) <= 0
+            ):
+                raise run_one.ExperimentError(
+                    f"instances[{index}].reference.value must be a "
+                    "positive finite number"
+                )
+            lower_bound = reference.get("lower_bound")
+            if lower_bound is not None and (
+                isinstance(lower_bound, bool)
+                or not isinstance(lower_bound, (int, float))
+                or not math.isfinite(float(lower_bound))
+                or float(lower_bound) <= 0
+            ):
+                raise run_one.ExperimentError(
+                    f"instances[{index}].reference.lower_bound must be a "
+                    "positive finite number or null"
+                )
+            if (
+                lower_bound is not None
+                and reference_value is not None
+                and float(lower_bound) > float(reference_value) + 1e-9
+            ):
+                raise run_one.ExperimentError(
+                    f"instances[{index}].reference.lower_bound cannot exceed "
+                    "reference.value"
+                )
+            for field in ("source", "distance_policy"):
+                if field in reference and (
+                    not isinstance(reference[field], str)
+                    or not reference[field].strip()
+                ):
+                    raise run_one.ExperimentError(
+                        f"instances[{index}].reference.{field} must be "
+                        "a non-empty string"
+                    )
 
     seeds = manifest.get("seeds")
     if not isinstance(seeds, list) or not seeds:
@@ -302,6 +430,30 @@ def validate_manifest(manifest: Mapping[str, Any]) -> None:
             "trigger_frequency",
             "trigger_offset",
             "time_limit_seconds",
+            "local_enabled",
+            "local_trigger_frequency",
+            "local_time_limit_seconds",
+            "adaptive_trigger_enabled",
+            "adaptive_minimum_interval",
+            "adaptive_local_new_columns",
+            "adaptive_local_stagnation",
+            "adaptive_global_stagnation",
+            "adaptive_utility_ema_weight",
+            "adaptive_high_utility_threshold",
+            "lp_dual_feedback_enabled",
+            "lp_time_limit_seconds",
+            "persistent_lp_enabled",
+            "solution_pool_size",
+            "solution_pool_gap",
+            "solution_pool_search_mode",
+            "diverse_injection_count",
+            "adaptive_search_allocation_enabled",
+            "adaptive_population_exploration",
+            "adaptive_population_diversity_weight",
+            "adaptive_population_column_weight",
+            "adaptive_search_ema_weight",
+            "adaptive_mutation_minimum_percent",
+            "adaptive_mutation_maximum_percent",
             "work_limit",
             "mip_gap",
             "seed",
@@ -316,6 +468,7 @@ def validate_manifest(manifest: Mapping[str, Any]) -> None:
             "environment_max_attempts",
             "environment_retry_base_milliseconds",
             "representation_route_limit",
+            "require_success",
         ),
         (
             "trigger_frequency",
@@ -369,6 +522,33 @@ def validate_manifest(manifest: Mapping[str, Any]) -> None:
         raise run_one.ExperimentError("resources.allow_smt must be boolean")
     run_one.validate_sp_config(sp)
     run_one.validate_environment_mapping(manifest.get("environment", {}))
+    validation = manifest.get("validation", {"required": False})
+    if not isinstance(validation, Mapping):
+        raise run_one.ExperimentError("validation must be an object")
+    _validate_keys(
+        validation,
+        "validation",
+        ("required", "absolute_tolerance", "relative_tolerance"),
+    )
+    if not isinstance(validation.get("required", False), bool):
+        raise run_one.ExperimentError("validation.required must be boolean")
+    for field in ("absolute_tolerance", "relative_tolerance"):
+        if field in validation and (
+            isinstance(validation[field], bool)
+            or not isinstance(validation[field], (int, float))
+            or not math.isfinite(float(validation[field]))
+            or float(validation[field]) < 0
+        ):
+            raise run_one.ExperimentError(
+                f"validation.{field} must be finite and nonnegative"
+            )
+    if (
+        manifest.get("problem_mode", "clrp") == "clrp-tw"
+        and not validation.get("required", False)
+    ):
+        raise run_one.ExperimentError(
+            "clrp-tw manifests must set validation.required=true"
+        )
 
 
 def _normalize_instance(
@@ -388,8 +568,30 @@ def _normalize_instance(
         if value.get("depot_config")
         else None
     )
-    value["best_known"] = float(value.get("best_known", 0.0))
-    value["is_optimal"] = bool(value.get("is_optimal", False))
+    raw_reference = value.get("reference")
+    stop_at_reference = bool(value.get("stop_at_reference", True))
+    if raw_reference is None:
+        best_known = float(value.get("best_known", 0.0))
+        reference_is_optimal = bool(value.get("is_optimal", False))
+        value["reference"] = {
+            "status": "optimal" if reference_is_optimal else (
+                "bks" if best_known > 0 else "unknown"
+            ),
+            "value": best_known if best_known > 0 else None,
+            "lower_bound": None,
+            "source": "legacy manifest fields",
+        }
+    else:
+        value["reference"] = dict(raw_reference)
+        status = value["reference"]["status"]
+        best_known = float(value["reference"].get("value") or 0.0)
+        reference_is_optimal = status == "optimal"
+    # The current C++ positional interface still accepts a numeric incumbent
+    # and optimality flag.  Unknown references are mapped to its neutral 0/false
+    # values, while the typed reference remains in run metadata.
+    value["best_known"] = best_known
+    value["is_optimal"] = reference_is_optimal and stop_at_reference
+    value["stop_at_reference"] = stop_at_reference
     value["manifest_index"] = index
     return value
 
@@ -405,6 +607,9 @@ def resolve_manifest(
 ) -> Dict[str, Any]:
     validate_manifest(manifest)
     resolved = copy.deepcopy(manifest)
+    resolved["source_schema_version"] = manifest["schema_version"]
+    resolved["schema_version"] = run_one.SCHEMA_VERSION
+    resolved["problem_mode"] = manifest.get("problem_mode", "clrp")
     resolved["manifest_path"] = str(manifest_path.resolve())
     resolved["repo_root"] = str(repo_root)
     resolved["binary"] = str(run_one.resolve_path(manifest["binary"], repo_root))
@@ -430,6 +635,16 @@ def resolve_manifest(
     resolved["sp"].setdefault("trigger_offset", "deterministic")
     for field, default in run_one.SP_OPTIONAL_DEFAULTS.items():
         resolved["sp"].setdefault(field, default)
+    resolved.setdefault("validation", {})
+    resolved["validation"].setdefault("required", False)
+    resolved["validation"].setdefault(
+        "absolute_tolerance",
+        run_one.solution_validator.DEFAULT_ABSOLUTE_TOLERANCE,
+    )
+    resolved["validation"].setdefault(
+        "relative_tolerance",
+        run_one.solution_validator.DEFAULT_RELATIVE_TOLERANCE,
+    )
 
     workers = _require_integer(
         resolved["resources"]["workers"],
@@ -483,13 +698,17 @@ def expand_runs(
                 "experiment_name": manifest["name"],
                 "run_id": run_id,
                 "instance_id": instance["id"],
+                "problem_mode": manifest["problem_mode"],
                 "binary": manifest["binary"],
                 "instance": instance["path"],
                 "depot_config": instance["depot_config"],
                 "solution": str((run_dir / "solution.txt").resolve()),
+                "solution_json": str((run_dir / "solution.json").resolve()),
                 "seed": seed,
                 "best_known": instance["best_known"],
                 "is_optimal": instance["is_optimal"],
+                "reference": dict(instance["reference"]),
+                "stop_at_reference": instance["stop_at_reference"],
                 "limits": dict(manifest["limits"]),
                 "resources": {
                     "gurobi_threads": manifest["resources"]["gurobi_threads"],
@@ -497,6 +716,7 @@ def expand_runs(
                 },
                 "sp": sp,
                 "environment": dict(manifest.get("environment", {})),
+                "validation": dict(manifest["validation"]),
                 "gurobi_home": manifest.get("gurobi_home"),
                 "manifest": {
                     "path": manifest["manifest_path"],
@@ -516,6 +736,7 @@ def _execute_job(
     shared_provenance: Mapping[str, Any],
     cancellation_event: threading.Event,
     affinity_pool: CpuAffinityPool,
+    inherited_lock_fds: Sequence[int] = (),
 ) -> Dict[str, Any]:
     config, run_dir = job
     affinity = affinity_pool.acquire()
@@ -529,9 +750,89 @@ def _execute_job(
             cancellation_event=cancellation_event,
             cpu_affinity=affinity,
             affinity_mode=affinity_pool.mode,
+            inherited_lock_fds=inherited_lock_fds,
         )
     finally:
         affinity_pool.release(affinity)
+
+
+def _emit_matrix_status(
+    experiment_root: Path,
+    jobs: Sequence[Tuple[Dict[str, Any], Path]],
+    futures: Mapping[concurrent.futures.Future, str],
+    counts: Mapping[str, int],
+) -> None:
+    """Atomically replace one bounded aggregate status and print one line."""
+
+    future_states = {
+        "queued": sum(not future.running() and not future.done() for future in futures),
+        "running": sum(future.running() and not future.done() for future in futures),
+        "done": sum(future.done() for future in futures),
+    }
+    health_counts: Dict[str, int] = {}
+    total_rss_bytes = 0
+    total_cpu_seconds = 0.0
+    heartbeat_count = 0
+    oldest_heartbeat_age = 0.0
+    active_sample: List[str] = []
+    now = time.time()
+    for config, run_dir in jobs:
+        run_path = run_dir / "run.json"
+        try:
+            run_document = run_one.load_json(run_path)
+        except (run_one.ExperimentError, OSError):
+            continue
+        if run_document.get("status") != "running":
+            continue
+        if len(active_sample) < MATRIX_STATUS_ACTIVE_SAMPLE_LIMIT:
+            active_sample.append(str(config["run_id"]))
+        status_name = run_document.get("files", {}).get("process_status")
+        if not isinstance(status_name, str):
+            continue
+        status_path = Path(status_name)
+        try:
+            status_document = run_one.load_json(status_path)
+            age = max(0.0, now - status_path.stat().st_mtime)
+        except (run_one.ExperimentError, OSError):
+            continue
+        heartbeat_count += 1
+        oldest_heartbeat_age = max(oldest_heartbeat_age, age)
+        health = str(status_document.get("health", "unknown"))
+        health_counts[health] = health_counts.get(health, 0) + 1
+        rss = status_document.get("rss_bytes")
+        cpu = status_document.get("cpu_seconds")
+        if isinstance(rss, int) and rss >= 0:
+            total_rss_bytes += rss
+        if isinstance(cpu, (int, float)) and math.isfinite(float(cpu)):
+            total_cpu_seconds += float(cpu)
+
+    status = {
+        "schema_version": run_one.SCHEMA_VERSION,
+        "updated_at": run_one.utc_now(),
+        "total_runs": len(jobs),
+        "future_states": future_states,
+        "result_counts": dict(counts),
+        "active_solver_processes": run_one.active_process_count(),
+        "heartbeat_count": heartbeat_count,
+        "health_counts": health_counts,
+        "oldest_heartbeat_age_seconds": round(oldest_heartbeat_age, 3),
+        "aggregate_solver_cpu_seconds": round(total_cpu_seconds, 3),
+        "aggregate_solver_rss_bytes": total_rss_bytes,
+        "active_run_sample": sorted(active_sample),
+        "active_run_sample_truncated": (
+            future_states["running"] > MATRIX_STATUS_ACTIVE_SAMPLE_LIMIT
+        ),
+    }
+    run_one.write_json(experiment_root / "matrix.status.json", status)
+    print(
+        "STATUS "
+        f"done={future_states['done']}/{len(jobs)} "
+        f"running={future_states['running']} "
+        f"queued={future_states['queued']} "
+        f"heartbeat={heartbeat_count} "
+        f"oldest={oldest_heartbeat_age:.1f}s",
+        flush=True,
+    )
 
 
 def validate_input_paths(manifest: Mapping[str, Any]) -> None:
@@ -655,97 +956,235 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     }
 
     experiment_root.mkdir(parents=True, exist_ok=True)
+    try:
+        experiment_lock = run_one.CrossProcessFileLock(
+            experiment_root / ".matrix.lock",
+            f"experiment {resolved['name']}",
+        ).acquire()
+    except run_one.ExperimentError as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 2
+    assert experiment_lock.fd is not None
     run_one.write_json(experiment_root / "manifest.original.json", original)
     run_one.write_json(experiment_root / "manifest.resolved.json", resolved)
 
     counts = {"success": 0, "skipped": 0, "failed": 0}
     failures: List[Dict[str, Any]] = []
+    fail_fast = bool(resolved.get("fail_fast", False))
+    aborted = False
+    interruption: Optional[Dict[str, Any]] = None
     started_at = run_one.utc_now()
     workers = resolved["resources"]["workers"]
 
     cancellation_event = threading.Event()
     executor = concurrent.futures.ThreadPoolExecutor(max_workers=workers)
     futures: Dict[concurrent.futures.Future, str] = {}
-    try:
-        futures = {
-            executor.submit(
-                _execute_job,
-                job,
-                repo_root,
-                arguments.force_successful,
-                shared_provenance,
-                cancellation_event,
-                affinity_pool,
-            ): job[0]["run_id"]
-            for job in jobs
-        }
-        for future in concurrent.futures.as_completed(futures):
-            run_id = futures[future]
-            try:
-                result = future.result()
-            except run_one.ExperimentError as error:
-                counts["failed"] += 1
-                failures.append({"run_id": run_id, "error": str(error)})
-                print(f"ERROR {run_id}: {error}", file=sys.stderr)
-                continue
-            except Exception as error:  # keep the remaining matrix running
-                counts["failed"] += 1
-                failures.append(
-                    {
-                        "run_id": run_id,
-                        "error": f"{type(error).__name__}: {error}",
-                    }
+    signal_state = run_one.SignalState()
+    with run_one.cancellation_signal_handlers(
+        cancellation_event
+    ) as signal_state:
+        try:
+            for job in jobs:
+                if cancellation_event.is_set():
+                    break
+                future = executor.submit(
+                    _execute_job,
+                    job,
+                    repo_root,
+                    arguments.force_successful,
+                    shared_provenance,
+                    cancellation_event,
+                    affinity_pool,
+                    (experiment_lock.fd,),
                 )
-                print(f"ERROR {run_id}: {error}", file=sys.stderr)
-                continue
+                futures[future] = job[0]["run_id"]
 
-            if result.get("skipped"):
-                counts["skipped"] += 1
-                print(f"SKIP {run_id}")
-            elif result["status"] == run_one.SUCCESS_STATUS:
-                counts["success"] += 1
-                print(
-                    f"OK   {run_id} "
-                    f"({result['duration_seconds']:.3f}s)"
+            pending_futures = set(futures)
+            next_status = time.monotonic()
+            while pending_futures:
+                if signal_state.signum is not None:
+                    aborted = True
+                    break
+                now = time.monotonic()
+                if now >= next_status:
+                    _emit_matrix_status(
+                        experiment_root, jobs, futures, counts
+                    )
+                    next_status = now + MATRIX_STATUS_INTERVAL_SECONDS
+                wait_timeout = max(
+                    0.0,
+                    min(
+                        MATRIX_STATUS_INTERVAL_SECONDS,
+                        next_status - time.monotonic(),
+                    ),
                 )
-            else:
-                counts["failed"] += 1
-                failures.append(
-                    {"run_id": run_id, "error": result.get("error")}
+                done, pending_futures = concurrent.futures.wait(
+                    pending_futures,
+                    timeout=wait_timeout,
+                    return_when=concurrent.futures.FIRST_COMPLETED,
                 )
+                for future in done:
+                    run_id = futures[future]
+                    try:
+                        result = future.result()
+                    except run_one.ExperimentError as error:
+                        counts["failed"] += 1
+                        failures.append(
+                            {"run_id": run_id, "error": str(error)}
+                        )
+                        print(f"ERROR {run_id}: {error}", file=sys.stderr)
+                        if fail_fast:
+                            aborted = True
+                            cancellation_event.set()
+                        continue
+                    except Exception as error:
+                        counts["failed"] += 1
+                        failures.append(
+                            {
+                                "run_id": run_id,
+                                "error": (
+                                    f"{type(error).__name__}: {error}"
+                                ),
+                            }
+                        )
+                        print(f"ERROR {run_id}: {error}", file=sys.stderr)
+                        if fail_fast:
+                            aborted = True
+                            cancellation_event.set()
+                        continue
+
+                    if result.get("skipped"):
+                        counts["skipped"] += 1
+                        print(f"SKIP {run_id}")
+                    elif result["status"] == run_one.SUCCESS_STATUS:
+                        counts["success"] += 1
+                        cpu_time = result.get("cpu_time_seconds")
+                        timing = (
+                            f"{cpu_time:.3f} CPU s"
+                            if isinstance(cpu_time, (int, float))
+                            else (
+                                f"{result['wall_duration_seconds']:.3f} "
+                                "wall s"
+                            )
+                        )
+                        print(f"OK   {run_id} ({timing})")
+                    else:
+                        counts["failed"] += 1
+                        failures.append(
+                            {
+                                "run_id": run_id,
+                                "error": result.get("error"),
+                            }
+                        )
+                        print(
+                            f"FAIL {run_id}: {result.get('error')}",
+                            file=sys.stderr,
+                        )
+                        if fail_fast:
+                            aborted = True
+                            cancellation_event.set()
+                if aborted:
+                    for pending in pending_futures:
+                        pending.cancel()
+                    run_one.terminate_active_processes()
+                    break
+        except KeyboardInterrupt:
+            aborted = True
+            interruption = {
+                "signal": "SIGINT",
+                "signal_number": int(getattr(signal, "SIGINT", 2)),
+            }
+            cancellation_event.set()
+            print(
+                "interrupted; stopping solver process groups",
+                file=sys.stderr,
+            )
+        finally:
+            if signal_state.signum is not None and interruption is None:
+                aborted = True
+                interruption = {
+                    "signal": signal_state.name,
+                    "signal_number": signal_state.signum,
+                }
                 print(
-                    f"FAIL {run_id}: {result.get('error')}",
+                    f"interrupted by {signal_state.name}; stopping solver "
+                    "process groups",
                     file=sys.stderr,
                 )
-    except KeyboardInterrupt:
-        cancellation_event.set()
-        for future in futures:
-            future.cancel()
-        run_one.terminate_active_processes()
-        executor.shutdown(wait=True, cancel_futures=True)
-        print(
-            "interrupted; running solver processes were stopped",
-            file=sys.stderr,
-        )
-        return 130
-    else:
-        executor.shutdown(wait=True)
+            if cancellation_event.is_set():
+                for future in futures:
+                    future.cancel()
+                run_one.terminate_active_processes()
+            executor.shutdown(
+                wait=True,
+                cancel_futures=(aborted or cancellation_event.is_set()),
+            )
+            # A worker can register a child just after the first cancellation
+            # snapshot.  The post-join pass is idempotent and closes that race.
+            run_one.terminate_active_processes()
 
+    if signal_state.signum is not None and interruption is None:
+        aborted = True
+        interruption = {
+            "signal": signal_state.name,
+            "signal_number": signal_state.signum,
+        }
+        run_one.terminate_active_processes()
+
+    cleanup_confirmed = run_one.terminate_active_processes()
+    active_processes_after_cleanup = run_one.active_process_count()
+    cleanup_error = None
+    if not cleanup_confirmed:
+        aborted = True
+        cleanup_error = (
+            "one or more solver process groups could not be confirmed stopped "
+            "after TERM and KILL"
+        )
+        print(f"error: {cleanup_error}", file=sys.stderr)
+
+    _emit_matrix_status(experiment_root, jobs, futures, counts)
     summary = {
         "schema_version": run_one.SCHEMA_VERSION,
         "experiment_name": resolved["name"],
+        "problem_mode": resolved["problem_mode"],
         "started_at": started_at,
         "finished_at": run_one.utc_now(),
         "total_runs": len(jobs),
         "counts": counts,
         "failures": failures,
+        "fail_fast": fail_fast,
+        "aborted": aborted,
+        "interrupted": interruption is not None,
+        "interruption": interruption,
+        "process_group_cleanup_confirmed": cleanup_confirmed,
+        "process_group_cleanup_error": cleanup_error,
+        "active_solver_processes_after_cleanup": (
+            active_processes_after_cleanup
+            if cleanup_confirmed or active_processes_after_cleanup > 0
+            else None
+        ),
     }
     run_one.write_json(experiment_root / "summary.json", summary)
+    if interruption is not None:
+        print(
+            "interrupted summary written; "
+            + (
+                "all registered solver process groups were confirmed stopped"
+                if cleanup_confirmed
+                else "one or more solver process groups could not be "
+                "confirmed stopped after TERM and KILL"
+            ),
+            file=sys.stderr,
+        )
+        experiment_lock.close()
+        return 128 + int(interruption["signal_number"])
     print(
         f"completed: {counts['success']} successful, "
         f"{counts['skipped']} skipped, {counts['failed']} failed"
     )
-    return 1 if counts["failed"] else 0
+    exit_code = 1 if counts["failed"] or not cleanup_confirmed else 0
+    experiment_lock.close()
+    return exit_code
 
 
 if __name__ == "__main__":

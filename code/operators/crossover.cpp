@@ -7,7 +7,89 @@
  ******************************************************************************/
 
 #include"crossover.h"
+#include <algorithm>
 #include <stdexcept>
+
+namespace {
+
+int selectEaxEdgeIndex(
+		const Node0* edges,
+		const int edgeCount,
+		const bool rejectDummy) {
+	if (edges == nullptr || edgeCount <= 0) {
+		throw std::logic_error(
+			"EAX edge selection received an empty candidate array");
+	}
+	int selected = RandomInt(0, edgeCount - 1);
+	if (!rejectDummy || edges[selected].cour >= 0)
+		return selected;
+
+	// Preserve randomized rejection sampling in the usual path, but put a
+	// deterministic ceiling on RNG retries.  The final scan is uniformity-
+	// neutral for valid arrays and converts a broken all-dummy invariant into
+	// an explicit failure instead of a permanent loop.
+	const int maximumRetries = std::max(16, edgeCount * 4);
+	for (int retry = 0; retry < maximumRetries; ++retry) {
+		selected = RandomInt(0, edgeCount - 1);
+		if (edges[selected].cour >= 0)
+			return selected;
+	}
+	for (int index = 0; index < edgeCount; ++index) {
+		if (edges[index].cour >= 0)
+			return index;
+	}
+	throw std::logic_error(
+		"EAX first-edge candidate array contains only dummy edges");
+}
+
+}  // namespace
+
+bool crossover::selectInitialEdgeSource(
+		const bool fatherAvailable,
+		const bool motherAvailable,
+		const hgasp::EaxParentMode mode,
+		const int randomBit) {
+	if (!fatherAvailable && !motherAvailable) {
+		throw std::invalid_argument(
+			"EAX cannot select an edge when neither parent is available");
+	}
+	if (fatherAvailable && !motherAvailable)
+		return true;
+	if (!fatherAvailable && motherAvailable)
+		return false;
+	if (randomBit != 0 && randomBit != 1) {
+		throw std::invalid_argument(
+			"EAX parent-selection random bit must be 0 or 1");
+	}
+	if (mode == hgasp::EaxParentMode::PaperCompatible) {
+		// Preserve the reference implementation: both random branches select
+		// the father when both parents have an available edge.
+		return true;
+	}
+	return randomBit == 0;
+}
+
+int crossover::selectOpenEndpoint(
+		const bool predecessorOpen,
+		const bool successorOpen,
+		const int preferredDirection) {
+	if (preferredDirection != -1 &&
+		preferredDirection != 0 &&
+		preferredDirection != 1) {
+		throw std::invalid_argument(
+			"EAX endpoint preference must be -1, 0, or 1");
+	}
+	if (preferredDirection == 1 && predecessorOpen)
+		return 1;
+	if (preferredDirection == -1 && successorOpen)
+		return -1;
+	if (predecessorOpen)
+		return 1;
+	if (successorOpen)
+		return -1;
+	throw std::logic_error(
+		"EAX intermediate endpoint is already linked on both sides");
+}
 
 crossover::crossover(read_data * data,  popManager * popman) {
 	this->data=data;
@@ -229,6 +311,11 @@ void crossover::extractABcycles(){
 	Node0 startCity,ori,rCity;bool father = false;int pos,count;//int city1;
 	nbABcycles=0;
 	int isF,isM;
+	int remainingEdgeSelections = 1;
+	for (int node = 0; node < numC; ++node) {
+		remainingEdgeSelections +=
+			AcapB[node].nbeF + AcapB[node].nbeM;
+	}
 	while(numAvaCity){// the isFather is used to define the edge (x,y) come from which solution, if isfather is true,
 		ABcycles[nbABcycles].nbCity=0;// the edge (x,y) comes from father, otherwise, it comes from mother solution
 		ori.cour = RandomInt(0, numAvaCity - 1);
@@ -243,12 +330,13 @@ void crossover::extractABcycles(){
 			if (AcapB[ori.cour].edgeM[i].cour > -1){
 				isM=1;break;
 			}
-		if (isF==1 && isM==0)father=true;
-		if (isF==0 && isM==1)father=false;
-		if (isF==1 && isM==1){
-			if (RandomInt(0, 1) == 0) father = true;
-			else father = true;
-		}
+		const int parentRandomBit =
+			(isF == 1 && isM == 1) ? RandomInt(0, 1) : 0;
+		father = selectInitialEdgeSource(
+			isF == 1,
+			isM == 1,
+			data->eaxParentMode,
+			parentRandomBit);
 		//
 		ori.isFather=father;
 		count=1;
@@ -256,19 +344,26 @@ void crossover::extractABcycles(){
 		addNodeToABcycles(nbABcycles, ori);
 		rCity.cour=-2;
 		while(1){
+			if (--remainingEdgeSelections < 0) {
+				throw std::logic_error(
+					"EAX AB-cycle extraction exhausted its finite edge "
+					"budget before closing a cycle");
+			}
 			if (father){
-				pos = RandomInt(0, AcapB[ori.cour].nbeF - 1);
-				while (ABcycles[nbABcycles].nbCity==1 && AcapB[ori.cour].edgeF[pos].cour ==-1)// to avoid select dummy edge at first
-					pos = RandomInt(0, AcapB[ori.cour].nbeF - 1);
+				pos = selectEaxEdgeIndex(
+					AcapB[ori.cour].edgeF,
+					AcapB[ori.cour].nbeF,
+					ABcycles[nbABcycles].nbCity == 1);
 				//to select a substring from the same solution
 				rCity.cour=AcapB[ori.cour].edgeF[pos].cour;
 				father=false;
 				rCity.isFather=father;
 			}
 			else{
-				pos = RandomInt(0, AcapB[ori.cour].nbeM - 1);
-				while (ABcycles[nbABcycles].nbCity == 1 && AcapB[ori.cour].edgeM[pos].cour == -1) 
-					pos = RandomInt(0, AcapB[ori.cour].nbeM - 1);
+				pos = selectEaxEdgeIndex(
+					AcapB[ori.cour].edgeM,
+					AcapB[ori.cour].nbeM,
+					ABcycles[nbABcycles].nbCity == 1);
 				//
 				rCity.cour=AcapB[ori.cour].edgeM[pos].cour;
 				father=true;
@@ -584,31 +679,15 @@ void crossover::generationIntermediateSolutions(){
 							else if (off->client[p1].next == NULL)
 								off->client[p1].next = &gEnd[p2];
 						}
-						else{
-							p1Before=0;
-							while(1){
-								if (off->client[p1].pre==NULL){
-									p1Before=1;break;
-								}
-								if (off->client[p1].next==NULL){
-									p1Before=-1;break;
-								}
-							}
-							p2Before=0;
-							while(1){
-								if (p1Before == 1 && off->client[p2].next == NULL){
-									p2Before=-1;break;
-								}
-								if (p1Before == -1 && off->client[p2].pre == NULL){
-									p2Before=1;break;
-								}
-								if (off->client[p2].pre==NULL){
-									p2Before=1;break;
-								}
-								if (off->client[p2].next==NULL){
-									p2Before=-1;break;
-								}
-							}
+							else{
+								p1Before = selectOpenEndpoint(
+									off->client[p1].pre == NULL,
+									off->client[p1].next == NULL,
+									0);
+								p2Before = selectOpenEndpoint(
+									off->client[p2].pre == NULL,
+									off->client[p2].next == NULL,
+									-p1Before);
 							// determine four cases
 							if (p1Before == 1 && p2Before == -1){
 								off->client[p1].pre=&off->client[p2];
@@ -1166,6 +1245,10 @@ void crossover::adjustSolutions(){// to adjust some locations after crossover.
 	}
 }
 bool crossover::gEAX(Individual *fa, Individual *ma, Individual *subPop, int &numSubPop){
+	// The output count is part of the API contract even when EAX cannot
+	// produce a batch.  In particular, extractABcycles() may fill its bounded
+	// workspace and take the early return below.
+	numSubPop = 0;
 	this->fa=fa;
 	this->ma=ma;
 	this->subPop=subPop;
@@ -1185,5 +1268,5 @@ bool crossover::gEAX(Individual *fa, Individual *ma, Individual *subPop, int &nu
 //	adjustSolutions();
 	//
 	numSubPop=nbeSets;//return the number of offspring solutions
-	return true;
+	return numSubPop > 0;
 }

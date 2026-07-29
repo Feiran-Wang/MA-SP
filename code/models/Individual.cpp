@@ -7,10 +7,139 @@
  ******************************************************************************/
 
 #include "Individual.h"
+#include "RouteEvaluator.h"
+
+#include <algorithm>
 #include <cmath>
+#include <filesystem>
+#include <iomanip>
 #include <limits>
+#include <sstream>
 #include <stdexcept>
 #include <string>
+
+namespace {
+
+bool hasHardTimeWindows(const read_data& data) noexcept {
+	return data.problemMode == hgasp::ProblemMode::ClrpTw;
+}
+
+std::vector<int> customerSequence(const Route& route) {
+	std::vector<int> sequence;
+	const Node* node = route.depot->next;
+	while (!node->isDepot) {
+		sequence.push_back(node->cour);
+		node = node->next;
+	}
+	return sequence;
+}
+
+using StructuralRoute = std::pair<int, std::vector<int>>;
+
+std::vector<StructuralRoute> structuralRoutes(
+		const Individual& individual,
+		const int numDepots) {
+	std::vector<StructuralRoute> result;
+	for (int depot = 0; depot < numDepots; ++depot) {
+		if (individual.location[depot].used) {
+			// An empty sequence is a depot-activation marker. It keeps the
+			// predicate exact even for a transient individual that opens a
+			// depot before attaching a non-empty route to it.
+			result.push_back({depot, {}});
+		}
+		for (int slot = 0;
+			 slot < individual.location[depot].maxVisit;
+			 ++slot) {
+			const Route& route =
+				*individual.location[depot].depots[slot].route;
+			if (!route.used || route.nbClients <= 0)
+				continue;
+			result.push_back({
+				depot,
+				customerSequence(route),
+			});
+		}
+	}
+	std::sort(result.begin(), result.end());
+	return result;
+}
+
+RouteEvaluation evaluateRoute(
+	const read_data& data,
+	const int depotIndex,
+	const std::vector<int>& sequence,
+	const EvaluationDetail detail = EvaluationDetail::Summary) {
+	if (hasHardTimeWindows(data)) {
+		const HardTimeWindowConstraint hardTimeWindows;
+		return RouteEvaluator(data, hardTimeWindows).evaluate(
+			depotIndex, sequence, detail);
+	}
+	const NoTemporalConstraint noTemporalConstraint;
+	return RouteEvaluator(data, noTemporalConstraint).evaluate(
+		depotIndex, sequence, detail);
+}
+
+int originalCustomerId(const read_data& data, const int customer) {
+	if (customer >= 0 &&
+		static_cast<std::size_t>(customer) <
+			data.originalCustomerIds.size()) {
+		return data.originalCustomerIds[static_cast<std::size_t>(customer)];
+	}
+	return customer;
+}
+
+int originalDepotId(const read_data& data, const int depot) {
+	if (depot >= 0 &&
+		static_cast<std::size_t>(depot) <
+			data.originalDepotIds.size()) {
+		return data.originalDepotIds[static_cast<std::size_t>(depot)];
+	}
+	return depot;
+}
+
+std::string jsonEscape(const std::string& value) {
+	std::ostringstream escaped;
+	escaped << '"';
+	for (const unsigned char character : value) {
+		switch (character) {
+			case '"':
+				escaped << "\\\"";
+				break;
+			case '\\':
+				escaped << "\\\\";
+				break;
+			case '\b':
+				escaped << "\\b";
+				break;
+			case '\f':
+				escaped << "\\f";
+				break;
+			case '\n':
+				escaped << "\\n";
+				break;
+			case '\r':
+				escaped << "\\r";
+				break;
+			case '\t':
+				escaped << "\\t";
+				break;
+			default:
+				if (character < 0x20U) {
+					escaped << "\\u"
+							<< std::hex << std::setw(4)
+							<< std::setfill('0')
+							<< static_cast<unsigned int>(character)
+							<< std::dec << std::setfill(' ');
+				} else {
+					escaped << static_cast<char>(character);
+				}
+		}
+	}
+	escaped << '"';
+	return escaped.str();
+}
+
+}  // namespace
 
 Individual::Individual()
 	: client(nullptr),
@@ -52,34 +181,60 @@ int Individual::representationRouteLimit(
 		throw std::out_of_range(
 			"representation route limit: depot index is out of range");
 	}
-	if (data.vehCap <= 0) {
+	if (data.numV <= 0) {
 		throw std::invalid_argument(
-			"representation route limit: vehicle capacity must be positive");
+			"representation route limit: customer count must be positive");
+	}
+	const int depotCapacity =
+		data.invLoc[data.numV + depotIndex];
+	if (depotCapacity < 0) {
+		throw std::invalid_argument(
+			"representation route limit: depot capacity is negative");
 	}
 
-	const int inventory = data.invLoc[data.numV + depotIndex];
-	if (inventory < 0 || data.totalDemand < 0) {
-		throw std::invalid_argument(
-			"representation route limit: capacities must be nonnegative");
+	int zeroDemandCustomers = 0;
+	int positiveDemandCustomers = 0;
+	int minimumPositiveDemand = std::numeric_limits<int>::max();
+	for (int customer = 0; customer < data.numV; ++customer) {
+		const int demand = data.demCus[customer];
+		if (demand < 0) {
+			throw std::invalid_argument(
+				"representation route limit: customer demand is negative");
+		}
+		if (demand == 0) {
+			++zeroDemandCustomers;
+		} else {
+			++positiveDemandCustomers;
+			minimumPositiveDemand =
+				std::min(minimumPositiveDemand, demand);
+		}
 	}
 
-	const double globalBoundValue =
-		std::ceil(1.2 * static_cast<double>(data.totalDemand) /
-				  static_cast<double>(data.vehCap)) +
-		5.0;
-	const double depotBoundValue =
-		3.0 * std::ceil(static_cast<double>(inventory) /
-						static_cast<double>(data.vehCap));
-	if (globalBoundValue >
-			static_cast<double>(std::numeric_limits<int>::max()) ||
-		depotBoundValue >
-			static_cast<double>(std::numeric_limits<int>::max())) {
-		throw std::overflow_error(
-			"representation route limit exceeds the supported integer range");
+	// Each non-empty route contains either a zero-demand customer, of which
+	// there are at most z, or at least one positive-demand customer. Since
+	// depot load is bounded by Q_d, at most floor(Q_d/q_min) routes can be of
+	// the latter kind. Exact cover also bounds the total by n. This is a safe
+	// representation bound for CLRP and CLRP-TW; it does not impose a fleet
+	// restriction on the mathematical problem.
+	long long safeBound = zeroDemandCustomers;
+	if (positiveDemandCustomers > 0) {
+		safeBound += std::min<long long>(
+			positiveDemandCustomers,
+			depotCapacity / minimumPositiveDemand);
 	}
-	return std::min(
-		static_cast<int>(globalBoundValue),
-		static_cast<int>(depotBoundValue));
+	safeBound = std::min<long long>(data.numV, safeBound);
+
+	// Existing route/depot storage assumes at least one slot for every
+	// candidate depot, including a depot that cannot serve positive demand.
+	return std::max(1, static_cast<int>(safeBound));
+}
+
+bool Individual::hasSameRouteStructure(
+		const Individual& other) const {
+	if (numV != other.numV || numL != other.numL)
+		return false;
+	return structuralRoutes(*this, numL) ==
+		structuralRoutes(other, other.numL);
 }
 
 void Individual::define(read_data *data){
@@ -154,6 +309,10 @@ void Individual::define(read_data *data){
 		route[i].dis=0;
 		route[i].load=0;
 		route[i].nbClients=0;
+		route[i].returnTime=0;
+		route[i].waitingTime=0;
+		route[i].temporalFeasible=true;
+		route[i].temporalViolationCustomer=-1;
 		route[i].penalty=0;
 	}
 	int rankRoute=0;
@@ -210,6 +369,10 @@ void Individual::initilization(){
 		route[i].dis=0;
 		route[i].load=0;
 		route[i].nbClients=0;
+		route[i].returnTime=0;
+		route[i].waitingTime=0;
+		route[i].temporalFeasible=true;
+		route[i].temporalViolationCustomer=-1;
 		route[i].penalty=0;
 	}
 	for (int i=numV;i<numC;i++){
@@ -283,6 +446,24 @@ void Individual::updateRouteInfor(int &r, int nbMoves){
 	route[r].dis=mynode->cumulatedDis;
 	route[r].load=mynode->cumulatedLoad;
 	route[r].nbClients=std::max(0, mynode->position - 1);
+	if (hasHardTimeWindows(*data)) {
+		const int depotIndex =
+			route[r].whichLocation->cour - numV;
+		const RouteEvaluation evaluation = evaluateRoute(
+			*data, depotIndex, customerSequence(route[r]));
+		route[r].load = evaluation.load;
+		route[r].dis = evaluation.travelCost;
+		route[r].returnTime = evaluation.returnTime;
+		route[r].waitingTime = evaluation.totalWaitingTime;
+		route[r].temporalFeasible = evaluation.temporalFeasible;
+		route[r].temporalViolationCustomer =
+			evaluation.violatingCustomer;
+	} else {
+		route[r].returnTime = 0.0;
+		route[r].waitingTime = 0.0;
+		route[r].temporalFeasible = true;
+		route[r].temporalViolationCustomer = -1;
+	}
 
 //		NodeDepot *loc = route[r].whichLocation;// update the location inventory
 //		loc->remainInven=0;
@@ -336,40 +517,73 @@ void Individual::outputSolution(){
 }
 void Individual::isRight(){// check the solution
 	double totalDis=0,totalFit=0;
-	Node *p = NULL;
-	int capLoc, capVeh;
 	for (int i=0;i<numV;i++)
 		checkArray[i] = 0;
 	for (int loc=numV; loc < numC; loc++){
-		if (location[loc - numV].used){
-			capLoc = 0;
+		NodeDepot& depot = location[loc - numV];
+		int capLoc = 0;
+		int routeCount = 0;
+		if (depot.used){
 			totalFit += data->openCostLoc[loc];
-			totalFit += data->usingCostVeh * location[loc - numV].splitTime;
-			for (int i=0;i<location[loc - numV].maxVisit;i++){
-				if (!location[loc - numV].depots[i].route->used)continue;
-				capVeh = 0;
-				p = &location[loc - numV].depots[i];
-				totalDis += data->D[p->cour][p->next->cour];
-				p=p->next;
-				while(! p->next->isDepot){
-					checkArray[p->cour] ++;
-					capVeh += data->demCus[p->cour];
-					totalDis += data->D[p->cour][p->next->cour];
-					p=p->next;
+		}
+		for (int i=0;i<depot.maxVisit;i++){
+			Route& currentRoute = *depot.depots[i].route;
+			const std::vector<int> sequence =
+				customerSequence(currentRoute);
+			if (sequence.empty()) {
+				if (currentRoute.used || currentRoute.load != 0) {
+					throw std::runtime_error(
+						"individual validation failed: empty route state");
 				}
-				checkArray[p->cour] ++;
-				capVeh += data->demCus[p->cour];
-				if (capVeh != p->route->load || capVeh > data->vehCap){
-                    throw std::runtime_error(
-                        "individual validation failed: route capacity");
+				continue;
+			}
+			if (!depot.used || !currentRoute.used) {
+				throw std::runtime_error(
+					"individual validation failed: nonempty route state");
+			}
+
+			++routeCount;
+			const RouteEvaluation evaluation = evaluateRoute(
+				*data, loc - numV, sequence);
+			for (const int customer : sequence) {
+				checkArray[customer]++;
+			}
+			if (evaluation.load != currentRoute.load ||
+				!evaluation.capacityFeasible) {
+				throw std::runtime_error(
+					"individual validation failed: route capacity");
+			}
+			if (hasHardTimeWindows(*data)) {
+				if (!evaluation.temporalFeasible) {
+					throw std::runtime_error(
+						"individual validation failed: route time window");
 				}
-				capLoc += capVeh;
-				totalDis += data->D[p->cour][p->next->cour];
+				if (!currentRoute.temporalFeasible ||
+					!data->equalTwoVar(
+						evaluation.returnTime,
+						currentRoute.returnTime) ||
+					!data->equalTwoVar(
+						evaluation.totalWaitingTime,
+						currentRoute.waitingTime)) {
+					throw std::runtime_error(
+						"individual validation failed: temporal aggregate "
+						"mismatch");
+				}
 			}
-			if (capLoc != p->route->whichLocation->remainInven || capLoc > location[loc-numV].inventory){
-                throw std::runtime_error(
-                    "individual validation failed: depot capacity");
+			capLoc += evaluation.load;
+			totalDis += evaluation.travelCost;
+		}
+		if (depot.used) {
+			totalFit += data->usingCostVeh * depot.splitTime;
+			if (routeCount != depot.splitTime ||
+				capLoc != depot.remainInven ||
+				capLoc > depot.inventory) {
+				throw std::runtime_error(
+					"individual validation failed: depot capacity");
 			}
+		} else if (capLoc != 0 || depot.remainInven != 0) {
+			throw std::runtime_error(
+				"individual validation failed: unused depot state");
 		}
 	}
 	for (int i=0;i<numV;i++)
@@ -387,6 +601,69 @@ void Individual::isRight(){// check the solution
 	}
 }
 void Individual::decideFeasible(){
+	if (hasHardTimeWindows(*data)) {
+		std::vector<int> customerUse(
+			static_cast<std::size_t>(numV), 0);
+		for (int i=0;i<numL;i++){
+			int computedDepotLoad = 0;
+			int computedRouteCount = 0;
+			for (int j=0; j<location[i].maxVisit; j++){
+				Route& currentRoute =
+					*location[i].depots[j].route;
+				const std::vector<int> sequence =
+					customerSequence(currentRoute);
+				if (sequence.empty()) {
+					if (currentRoute.used ||
+						currentRoute.load != 0) {
+						isFeasible = false;
+						return;
+					}
+					continue;
+				}
+				if (!location[i].used || !currentRoute.used) {
+					isFeasible = false;
+					return;
+				}
+				++computedRouteCount;
+				const RouteEvaluation evaluation = evaluateRoute(
+					*data, i, sequence);
+				if (!evaluation.feasible() ||
+					evaluation.load != currentRoute.load ||
+					!data->equalTwoVar(
+						evaluation.travelCost,
+						currentRoute.dis)) {
+					isFeasible = false;
+					return;
+				}
+				for (const int customer : sequence) {
+					if (++customerUse[
+							static_cast<std::size_t>(customer)] != 1) {
+						isFeasible = false;
+						return;
+					}
+				}
+				computedDepotLoad += evaluation.load;
+			}
+			const bool shouldBeUsed = computedRouteCount != 0;
+			if (location[i].used != shouldBeUsed ||
+				location[i].splitTime != computedRouteCount ||
+				computedDepotLoad > location[i].inventory ||
+				computedDepotLoad != location[i].remainInven) {
+				isFeasible = false;
+				return;
+			}
+		}
+		for (const int useCount : customerUse) {
+			if (useCount != 1) {
+				isFeasible = false;
+				return;
+			}
+		}
+		isFeasible = true;
+		return;
+	}
+
+	// Preserve the legacy CLRP feasibility semantics.
 	for (int i=0;i<numL;i++){
 		if (location[i].used){
 			for (int j=0; j<location[i].maxVisit; j++){
@@ -407,15 +684,55 @@ void Individual::decideFeasible(){
 }
 void Individual::outputBestSolution(){
 	std::cout<<"----------Write Solution With Value  "<<fit<<" In: "<<data->pathSolution<<std::endl;
+	decideFeasible();
+	if (!isFeasible) {
+		throw std::runtime_error(
+			"solution output failed: solution is infeasible");
+	}
+	isRight();
+
+	double depotOpeningCost = 0.0;
+	double vehicleFixedCost = 0.0;
+	double travelCost = 0.0;
+	for (int depotIndex = 0; depotIndex < numL; ++depotIndex) {
+		if (!location[depotIndex].used) {
+			continue;
+		}
+		depotOpeningCost +=
+			data->openCostLoc[numV + depotIndex];
+		vehicleFixedCost +=
+			data->usingCostVeh * location[depotIndex].splitTime;
+		for (int slot = 0;
+			 slot < location[depotIndex].maxVisit;
+			 ++slot) {
+			const Route& currentRoute =
+				*location[depotIndex].depots[slot].route;
+			if (currentRoute.used) {
+				travelCost += evaluateRoute(
+					*data,
+					depotIndex,
+					customerSequence(currentRoute)).travelCost;
+			}
+		}
+	}
+	const double actualCost =
+		depotOpeningCost + vehicleFixedCost + travelCost;
+	const double searchCpuSeconds = data->elapsedCpuSeconds();
+
+	// Preserve the historical human-readable output for existing workflows.
 	std::ofstream myfile(data->pathSolution);
-	//double Distance=0;
 	if (myfile.is_open()){
-		myfile<<"The objective is: "<<std::endl;
-		myfile<<fit<<std::endl;
-		myfile<<"The running time is: "<<std::endl;
-		myfile<<(double)clock()/(double)CLOCKS_PER_SEC<<std::endl;
-		myfile<<"The time meeting best is: "<<std::endl;
-		myfile<<data->meetBestTime<<std::endl;
+		myfile << std::setprecision(17);
+			myfile<<"The objective is: "<<std::endl;
+			myfile<<fit<<std::endl;
+			myfile<<"The running time is: "<<std::endl;
+			myfile<<searchCpuSeconds<<std::endl;
+			myfile<<"The time meeting best is: "<<std::endl;
+			myfile<<data->meetBestTime<<std::endl;
+			myfile<<"The time basis is: "<<std::endl;
+			myfile<<"process_cpu"<<std::endl;
+			myfile<<"The time scope is: "<<std::endl;
+			myfile<<"search_after_instance_loading"<<std::endl;
 		Node *p;
 		for (int loc=numV; loc < numC; loc++){
 			if (location[loc - numV].used){
@@ -437,68 +754,148 @@ void Individual::outputBestSolution(){
 				}
 			}
 		}
-		// computing the actual cost
-		double totalDis=0,totalFit=0;
-		int capLoc, capVeh;
-		for (int loc=numV; loc < numC; loc++){
-			if (location[loc - numV].used){
-				capLoc = 0;
-				totalFit += data->openCostLoc[loc];
-				totalFit += data->usingCostVeh * location[loc - numV].splitTime;
-				for (int i=0;i<location[loc - numV].maxVisit;i++){
-					if (!location[loc - numV].depots[i].route->used)continue;
-					capVeh = 0;
-					p = &location[loc - numV].depots[i];
-					totalDis += data->D[p->cour][p->next->cour];
-					p=p->next;
-					while(! p->next->isDepot){
-						checkArray[p->cour] ++;
-						capVeh += data->demCus[p->cour];
-						totalDis += data->D[p->cour][p->next->cour];
-						p=p->next;
-					}
-					checkArray[p->cour] ++;
-					capVeh += data->demCus[p->cour];
-					if (capVeh != p->route->load || capVeh > data->vehCap){
-                        throw std::runtime_error(
-                            "solution output failed: route capacity mismatch");
-					}
-					capLoc += capVeh;
-					totalDis += data->D[p->cour][p->next->cour];
-				}
-			}
-		}
-		myfile<<"The actual cost is "<<totalFit + totalDis<<std::endl;
-
-
-	/*	myfile<<numC<<std::endl;
-		for (int i=0;i<numC;i++){
-			myfile<<data->x[i]<<" "<<data->y[i]<<std::endl;
-		}
-		Node *p;
-		for (int loc=numV; loc < numC; loc++){
-			if (location[loc - numV].used){
-				int count=0;
-				for (int i=0;i<location[loc - numV].maxVisit;i++){
-					if (!location[loc - numV].depots[i].route->used)continue;
-					count++;
-					p = &location[loc - numV].depots[i];
-					myfile<<p->cour<<" ";
-					p=p->next;
-					while(! p->isDepot){
-						myfile<<p->cour<<" ";
-						p=p->next;
-					}
-				//	myfile<<p->cour<<" "<<p->next->cour<<std::endl;
-					myfile<<p->cour<<" "<<std::endl;
-				}
-			}
-		}
-*/
+		myfile<<"The actual cost is "<<actualCost<<std::endl;
 	}
 	else std::cout << "----- IMPOSSIBLE TO OPEN: " << data->pathSolution << std::endl;
 	myfile.close();
 
+	// The machine-readable solution is a fixed-name sibling of solution.txt,
+	// so experiment tooling can validate either problem mode uniformly.
+	const std::filesystem::path textPath(data->pathSolution);
+	const std::filesystem::path jsonPath =
+		textPath.parent_path() / "solution.json";
+	std::ofstream json(jsonPath);
+	if (!json) {
+		throw std::runtime_error(
+			"solution output failed: cannot open " + jsonPath.string());
+	}
+	json << std::setprecision(17);
+	json << "{\n";
+	json << "  \"schema_version\": 1,\n";
+	json << "  \"problem_mode\": "
+		 << jsonEscape(hgasp::toString(data->problemMode)) << ",\n";
+	json << "  \"eax_parent_mode\": "
+		 << jsonEscape(hgasp::toString(data->eaxParentMode)) << ",\n";
+	json << "  \"instance_id\": "
+		 << jsonEscape(
+				std::filesystem::path(data->pathInstance).stem().string())
+		 << ",\n";
+	json << "  \"feasible\": true,\n";
+	json << "  \"distance_policy\": "
+		 << jsonEscape(
+				hasHardTimeWindows(*data)
+					? "euclidean-floor"
+					: (data->instanceFormat ==
+							   hgasp::InstanceFormat::LegacyDat &&
+						   data->realOrInteger != 0
+						   ? "euclidean"
+						   : "euclidean-ceil-100"))
+		 << ",\n";
+	json << "  \"timing\": {\n";
+	json << "    \"search_cpu_seconds\": " << searchCpuSeconds << ",\n";
+	json << "    \"global_best_cpu_seconds\": "
+		 << data->meetBestTime << ",\n";
+	json << "    \"basis\": \"process_cpu\",\n";
+	json << "    \"scope\": \"search_after_instance_loading\"\n";
+	json << "  },\n";
+	json << "  \"objective\": {\n";
+	json << "    \"total\": " << actualCost << ",\n";
+	json << "    \"depot_opening\": " << depotOpeningCost << ",\n";
+	json << "    \"vehicle_fixed\": " << vehicleFixedCost << ",\n";
+	json << "    \"travel\": " << travelCost << "\n";
+	json << "  },\n";
+	json << "  \"depots\": [";
+
+	bool firstDepot = true;
+	for (int depotIndex = 0; depotIndex < numL; ++depotIndex) {
+		if (!location[depotIndex].used) {
+			continue;
+		}
+		json << (firstDepot ? "\n" : ",\n");
+		firstDepot = false;
+		json << "    {\n";
+		json << "      \"depot_id\": "
+			 << originalDepotId(*data, depotIndex) << ",\n";
+		json << "      \"load\": "
+			 << location[depotIndex].remainInven << ",\n";
+		json << "      \"routes\": [";
+
+		bool firstRoute = true;
+		for (int slot = 0;
+			 slot < location[depotIndex].maxVisit;
+			 ++slot) {
+			const Route& currentRoute =
+				*location[depotIndex].depots[slot].route;
+			if (!currentRoute.used) {
+				continue;
+			}
+			const std::vector<int> sequence =
+				customerSequence(currentRoute);
+			const RouteEvaluation evaluation = evaluateRoute(
+				*data,
+				depotIndex,
+				sequence,
+				hasHardTimeWindows(*data)
+					? EvaluationDetail::FullSchedule
+					: EvaluationDetail::Summary);
+
+			json << (firstRoute ? "\n" : ",\n");
+			firstRoute = false;
+			json << "        {\n";
+			json << "          \"load\": " << evaluation.load << ",\n";
+			json << "          \"travel_cost\": "
+				 << evaluation.travelCost << ",\n";
+			json << "          \"return_time\": "
+				 << evaluation.returnTime << ",\n";
+			json << "          \"customers\": [";
+			for (std::size_t position = 0;
+				 position < sequence.size();
+				 ++position) {
+				if (position != 0) {
+					json << ", ";
+				}
+				json << originalCustomerId(
+					*data, sequence[position]);
+			}
+			json << "]";
+
+			if (hasHardTimeWindows(*data)) {
+				json << ",\n          \"schedule\": [";
+				for (std::size_t position = 0;
+					 position < evaluation.schedule.size();
+					 ++position) {
+					if (position != 0) {
+						json << ", ";
+					}
+					const CustomerSchedule& visit =
+						evaluation.schedule[position];
+					json << "{\"customer_id\": "
+						 << originalCustomerId(*data, visit.customer)
+						 << ", \"arrival_time\": "
+						 << visit.arrivalTime
+						 << ", \"waiting_time\": "
+						 << visit.waitingTime
+						 << ", \"service_start_time\": "
+						 << visit.serviceStartTime
+						 << ", \"departure_time\": "
+						 << visit.departureTime << "}";
+				}
+				json << "]\n";
+			} else {
+				json << "\n";
+			}
+			json << "        }";
+		}
+		json << (firstRoute ? "]\n" : "\n      ]\n");
+		json << "    }";
+	}
+	json << (firstDepot ? "]\n" : "\n  ]\n");
+	json << "}\n";
+	if (!json) {
+		throw std::runtime_error(
+			"solution output failed while writing " +
+			jsonPath.string());
+	}
 }
 void Individual::removeProximity(Individual * indiv){
     // 防御性编程：必须检查迭代器边界
@@ -550,11 +947,16 @@ double Individual::brokenPairsDistance(Individual * indiv2){
 	for (int i=numV; i<numC; i++){
 		if (location[i-numV].used){
 			for (int j=0; j<location[i-numV].maxVisit; j++){
-				if (location[i-numV].depots[j].route->used){
-					p = &location[i-numV].depots[j];
-					p1=p->next;
-					if (comparison[p1->cour].location !=
-						p->route->whichLocation->cour) {
+					if (location[i-numV].depots[j].route->used){
+						p = &location[i-numV].depots[j];
+						p1=p->next;
+						if (p1 == nullptr || p1->isDepot) {
+							throw std::logic_error(
+								"diversity evaluation found a used empty "
+								"route");
+						}
+						if (comparison[p1->cour].location !=
+							p->route->whichLocation->cour) {
 						hammingDis += 10;
 					}
 					isFirst = true;
@@ -571,7 +973,10 @@ double Individual::brokenPairsDistance(Individual * indiv2){
 							p->route->whichLocation->cour){
 							hammingDis += 10;
 						}
-						p = p->next;
+						// Advance once so every route edge is examined.  The
+						// cache refactor must preserve the original
+						// broken-pairs traversal; advancing twice skips half
+						// the edges and can land on the end-depot sentinel.
 						p = p->next;
 						isFirst = false;
 					}
@@ -622,9 +1027,6 @@ void Individual::rebuildFromSP(const std::vector<StandaloneRoute>& spRoutes) {
                 std::to_string(sRoute.locId));
         }
 
-        int computedLoad = 0;
-        double computedCost = 0.0;
-        int previous = numV + sRoute.locId;
         for (const int customer : sRoute.sequence) {
             if (customer < 0 || customer >= numV) {
                 throw std::out_of_range(
@@ -634,12 +1036,11 @@ void Individual::rebuildFromSP(const std::vector<StandaloneRoute>& spRoutes) {
                 throw std::invalid_argument(
                     "SP reconstruction serves a customer more than once");
             }
-            computedLoad += data->demCus[customer];
-            computedCost += data->D[previous][customer];
-            previous = customer;
         }
-        computedCost +=
-            data->D[previous][numV + sRoute.locId];
+        const RouteEvaluation evaluation = evaluateRoute(
+            *data, sRoute.locId, sRoute.sequence);
+        const int computedLoad = evaluation.load;
+        const double computedCost = evaluation.travelCost;
 
         if (computedLoad != sRoute.totalLoad) {
             throw std::invalid_argument(
@@ -652,6 +1053,12 @@ void Individual::rebuildFromSP(const std::vector<StandaloneRoute>& spRoutes) {
         if (!data->equalTwoVar(computedCost, sRoute.routeCost)) {
             throw std::invalid_argument(
                 "SP reconstruction route cost does not match its sequence");
+        }
+        if (hasHardTimeWindows(*data) &&
+            !evaluation.temporalFeasible) {
+            throw std::invalid_argument(
+                "SP reconstruction contains a route that violates a hard "
+                "time window or depot closing time");
         }
         depotLoad[sRoute.locId] += computedLoad;
         if (depotLoad[sRoute.locId] >
@@ -727,7 +1134,9 @@ void Individual::rebuildFromSP(const std::vector<StandaloneRoute>& spRoutes) {
     this->penalty = 0.0;
     this->decideFeasible();
 
-    if (this->isFeasible) {
-        this->isRight();
+    if (!this->isFeasible) {
+        throw std::logic_error(
+            "SP reconstruction produced an infeasible individual");
     }
+    this->isRight();
 }

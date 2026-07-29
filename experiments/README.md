@@ -1,6 +1,16 @@
 # HGA-SP experiments
 
-Experiment definitions are JSON manifests. The runner uses only the Python
+Experiment definitions are JSON manifests. Schema v3 supports two explicit
+mathematical modes:
+
+- `problem_mode: "clrp"` solves the original Set S CLRP;
+- `problem_mode: "clrp-tw"` solves Farham Set F with hard time windows.
+
+CLRP-TW is validated as ordinary CLRP feasibility plus customer time windows,
+service times, and depot closing times. Schema v2 manifests remain readable
+and are normalized to `problem_mode: "clrp"`; new manifests should use v3.
+
+The runner uses only the Python
 standard library and starts the solver with an argument array, not a shell
 command. Paths such as `instances/depot configurations/...` therefore remain a
 single argument.
@@ -37,6 +47,34 @@ Run it:
   experiments/manifests/smoke.json
 ```
 
+The corresponding CLRP-TW smoke manifest is:
+
+```bash
+.venv/bin/python scripts/experiments/run_matrix.py \
+  experiments/manifests/set_f_smoke.json
+```
+
+To exercise the complete Route Pool → SP → reconstruction boundary with an
+immediate SP trigger, use the dedicated functional smoke profile:
+
+```bash
+.venv/bin/python scripts/experiments/run_matrix.py \
+  experiments/manifests/set_f_tw_sp_smoke.json
+```
+
+This profile is for integration coverage, not runtime or solution-quality
+comparison. It preserves the published reference as `status: optimal`, while
+`stop_at_reference: false` deliberately disables solver early termination so
+that a normal run can reach the Route Pool → SP → reconstruction path. The
+profile also requires an observed successful SP result before the run may pass.
+
+The Set F smoke/MVP manifests use the 12 published, proven-optimal
+`R101`--`R112_s1_3_10` values. Their calibrated distance policy is
+`euclidean-floor`: both travel cost and travel time are
+`floor(Euclidean distance)`. Larger representative instances retain the typed
+reference `{"status": "unknown", "value": null}` until a source-specific
+value has been verified.
+
 The manifest format is documented by
 `experiments/schemas/experiment.schema.json`. Relative binary, instance,
 depot-configuration, and output paths are resolved from the repository root.
@@ -54,6 +92,23 @@ For a single ad hoc run:
   --iteration-limit 1000
 ```
 
+For Farham CLRP-TW, omit the Set S depot-configuration file and select the
+mode explicitly:
+
+```bash
+.venv/bin/python scripts/experiments/run_one.py \
+  --binary build/release-gurobi/hgasp \
+  --instance instances/set_F/R101_s1_3_10.txt \
+  --problem-mode clrp-tw \
+  --output-dir artifacts/experiments/manual/runs/R101_s1_3_10/seed_0 \
+  --seed 0 \
+  --time-limit 60 \
+  --iteration-limit 1000 \
+  --best-known 2687 \
+  --is-optimal \
+  --require-validation
+```
+
 ## Matrix and resource behavior
 
 `instances × seeds` defines the run matrix. Every matrix cell has its own
@@ -64,24 +119,61 @@ artifacts/experiments/<name>/
 ├── manifest.original.json
 ├── manifest.resolved.json
 ├── summary.json
+├── matrix.status.json
 └── runs/
     └── <instance-id>/
         └── seed_<seed>/
             ├── config.resolved.json
             ├── run.json
             ├── solution.txt
+            ├── solution.json
             └── logs/
                 ├── attempt_001/
                 │   ├── stdout.log
                 │   ├── stderr.log
                 │   ├── hgasp.log
+                │   ├── events.jsonl
+                │   ├── algorithm.status.json
+                │   ├── process.status.json
                 │   └── gurobi.log
                 └── attempt_002/ ...
 ```
 
 Each retry receives a new attempt directory, so earlier failure evidence is
 preserved. The runner explicitly assigns unique HGA-SP and Gurobi log paths
-for every matrix cell and attempt.
+for every matrix cell and attempt. `hgasp.log` and `events.jsonl` are bounded
+rotating logs; status JSON files are atomically replaced snapshots rather than
+append-only histories.
+
+The solver receives `--problem-mode clrp` or `--problem-mode clrp-tw`
+explicitly. Directory names are never used to infer the mathematical problem.
+
+## Independent solution validation
+
+`validation.required=true` is mandatory for `clrp-tw` manifests. In this mode,
+a zero solver return code and a non-empty legacy `solution.txt` are not enough
+for success. The solver must also write `solution.json` in the run directory,
+and `scripts/validation/solution_validator.py` independently reconstructs:
+
+- exact customer coverage;
+- vehicle and depot capacity;
+- depot, vehicle, and travel objective components;
+- for CLRP-TW, waiting, service starts, hard due dates, and depot return time.
+
+The validator reads the original instance and does not import solver
+feasibility code. `run.json` records `validation_required`,
+`validation_status`, the recomputed cost components, and all diagnostics. Set S
+manifests default to non-required validation for compatibility; if a Set S run
+writes `solution.json`, it is validated as well.
+
+The validator can also be invoked directly:
+
+```bash
+.venv/bin/python scripts/validation/solution_validator.py \
+  --problem-mode clrp-tw \
+  --instance instances/set_F/R101_s1_3_10.txt \
+  --solution artifacts/experiments/set_f_smoke/runs/R101_s1_3_10/seed_0/solution.json
+```
 
 `resources.workers` bounds concurrent processes and
 `resources.gurobi_threads` is the per-process CPU budget. The runner rejects a
@@ -109,6 +201,30 @@ contract:
 | `sp.trigger_frequency` | `HGASP_SP_TRIGGER_FREQUENCY` |
 | `sp.trigger_offset` | `HGASP_SP_TRIGGER_OFFSET` |
 | `sp.time_limit_seconds` | `HGASP_SP_TIME_LIMIT_SECONDS` |
+| `sp.local_enabled` | `HGASP_SP_LOCAL_ENABLED` |
+| `sp.local_trigger_frequency` | `HGASP_SP_LOCAL_TRIGGER_FREQUENCY` |
+| `sp.local_time_limit_seconds` | `HGASP_SP_LOCAL_TIME_LIMIT_SECONDS` |
+| `sp.adaptive_trigger_enabled` | `HGASP_SP_ADAPTIVE_TRIGGER_ENABLED` |
+| `sp.adaptive_minimum_interval` | `HGASP_SP_ADAPTIVE_MINIMUM_INTERVAL` |
+| `sp.adaptive_local_new_columns` | `HGASP_SP_ADAPTIVE_LOCAL_NEW_COLUMNS` |
+| `sp.adaptive_local_stagnation` | `HGASP_SP_ADAPTIVE_LOCAL_STAGNATION` |
+| `sp.adaptive_global_stagnation` | `HGASP_SP_ADAPTIVE_GLOBAL_STAGNATION` |
+| `sp.adaptive_utility_ema_weight` | `HGASP_SP_ADAPTIVE_UTILITY_EMA_WEIGHT` |
+| `sp.adaptive_high_utility_threshold` | `HGASP_SP_ADAPTIVE_HIGH_UTILITY_THRESHOLD` |
+| `sp.lp_dual_feedback_enabled` | `HGASP_SP_LP_DUAL_FEEDBACK_ENABLED` |
+| `sp.lp_time_limit_seconds` | `HGASP_SP_LP_TIME_LIMIT_SECONDS` |
+| `sp.persistent_lp_enabled` | `HGASP_SP_PERSISTENT_LP_ENABLED` |
+| `sp.solution_pool_size` | `HGASP_SP_SOLUTION_POOL_SIZE` |
+| `sp.solution_pool_gap` | `HGASP_SP_SOLUTION_POOL_GAP` |
+| `sp.solution_pool_search_mode` | `HGASP_SP_SOLUTION_POOL_SEARCH_MODE` |
+| `sp.diverse_injection_count` | `HGASP_SP_DIVERSE_INJECTION_COUNT` |
+| `sp.adaptive_search_allocation_enabled` | `HGASP_ADAPTIVE_SEARCH_ALLOCATION_ENABLED` |
+| `sp.adaptive_population_exploration` | `HGASP_ADAPTIVE_POPULATION_EXPLORATION` |
+| `sp.adaptive_population_diversity_weight` | `HGASP_ADAPTIVE_POPULATION_DIVERSITY_WEIGHT` |
+| `sp.adaptive_population_column_weight` | `HGASP_ADAPTIVE_POPULATION_COLUMN_WEIGHT` |
+| `sp.adaptive_search_ema_weight` | `HGASP_ADAPTIVE_SEARCH_EMA_WEIGHT` |
+| `sp.adaptive_mutation_minimum_percent` | `HGASP_ADAPTIVE_MUTATION_MINIMUM_PERCENT` |
+| `sp.adaptive_mutation_maximum_percent` | `HGASP_ADAPTIVE_MUTATION_MAXIMUM_PERCENT` |
 | `sp.work_limit` | `HGASP_SP_WORK_LIMIT` |
 | `sp.mip_gap` | `HGASP_SP_MIP_GAP` |
 | `sp.seed` | `HGASP_SP_SEED` |
@@ -127,6 +243,20 @@ contract:
 
 Boolean settings are encoded as `1` or `0`. These effective values appear in
 `run.json` under `environment_overrides`.
+
+When `sp.adaptive_trigger_enabled=true`, `sp.local_trigger_frequency` is a
+declared fallback value and is not the active local cadence. Local dispatch is
+instead governed by the adaptive minimum interval, column-novelty threshold,
+stagnation threshold, and utility feedback. The fixed local frequency becomes
+active only when adaptive triggering is disabled. `sp.trigger_frequency` and
+the resolved offset always define scheduled global checkpoints, although the
+adaptive controller may skip the actual solve for an unchanged master or
+insufficient remaining CPU.
+
+For mdEAX ablations, set
+`environment.HGASP_EAX_PARENT_MODE` to `paper-compatible` or `corrected`.
+The solver default is `paper-compatible`; do not aggregate both modes as one
+algorithm configuration.
 
 Matrix runs default `sp.trigger_offset` to `"deterministic"`. The resolved
 integer is derived from the run ID and limited so an iteration-bounded run
@@ -181,3 +311,15 @@ times.
 
 The CSV retains both successful and discovered run counts, so failed or
 incomplete cells remain visible in the comparison.
+
+For Set F, place a `reference_results.csv` in the directory passed through
+`--benchmarks`. Its columns are:
+
+```text
+instance_id,status,value,lower_bound,source,distance_policy
+```
+
+`status` is `unknown`, `bks`, or `optimal`. Unknown is represented by an empty
+value, never by numeric zero. Set F IDs are matched exactly, preventing
+punctuation-normalization collisions. When a lower bound is present, the
+comparison includes both gap-to-reference and gap-to-lower-bound columns.

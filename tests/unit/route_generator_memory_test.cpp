@@ -47,6 +47,9 @@ double referenceBrokenPairsDistance(
 
             Node* node = &individual.location[i - numV].depots[j];
             Node* first = node->next;
+            if (first == nullptr || first->isDepot) {
+                continue;
+            }
             if (other.client[first->cour]
                     .route->whichLocation->cour !=
                 node->route->whichLocation->cour) {
@@ -67,7 +70,6 @@ double referenceBrokenPairsDistance(
                     node->route->whichLocation->cour) {
                     distance += 10.0;
                 }
-                node = node->next;
                 node = node->next;
                 isFirst = false;
             }
@@ -148,6 +150,11 @@ int main() {
         1.0e-9) {
         return fail("reusing the diversity cache changed the distance");
     }
+    if (std::fabs(first.brokenPairsDistance(&first) + 6.0) >
+        1.0e-9) {
+        return fail(
+            "two even routes no longer inspect every route edge");
+    }
 
     // Rebuilding a solution must invalidate and refresh its compact cache.
     second.rebuildFromSP({makeRoute(0, {0, 1, 2, 3})});
@@ -156,6 +163,43 @@ int main() {
     const double rebuiltCached = first.brokenPairsDistance(&second);
     if (std::fabs(rebuiltExpected - rebuiltCached) > 1.0e-9) {
         return fail("diversity cache was stale after a route rebuild");
+    }
+    if (std::fabs(second.brokenPairsDistance(&second) + 5.0) >
+        1.0e-9) {
+        return fail(
+            "one four-customer route no longer inspects every route edge");
+    }
+
+    // Odd-length and singleton routes used to advance the traversal onto an
+    // end-depot sentinel and index the customer-only cache with a depot ID.
+    // Keep both shapes in one complete solution to lock down that boundary.
+    Individual oddAndSingleton;
+    oddAndSingleton.define(&data);
+    oddAndSingleton.rebuildFromSP(
+        {makeRoute(0, {0, 1, 2}), makeRoute(1, {3})});
+
+    const double oddExpected = referenceBrokenPairsDistance(
+        oddAndSingleton, second, data.numV, data.numC);
+    const double oddCached =
+        oddAndSingleton.brokenPairsDistance(&second);
+    if (std::fabs(oddExpected - oddCached) > 1.0e-9) {
+        return fail(
+            "odd/singleton diversity traversal changed the distance");
+    }
+    if (std::fabs(
+            oddAndSingleton.brokenPairsDistance(&oddAndSingleton) +
+            6.0) > 1.0e-9) {
+        return fail(
+            "odd and singleton routes no longer inspect every route edge");
+    }
+
+    const double evenExpected = referenceBrokenPairsDistance(
+        second, oddAndSingleton, data.numV, data.numC);
+    const double evenCached =
+        second.brokenPairsDistance(&oddAndSingleton);
+    if (std::fabs(evenExpected - evenCached) > 1.0e-9) {
+        return fail(
+            "even diversity traversal changed the distance");
     }
 
     std::cout << "route_generator_memory_test: PASS" << std::endl;
