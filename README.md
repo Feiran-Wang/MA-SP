@@ -8,7 +8,7 @@ Author: Feiran Wang
 ## Requirements
 
 - CMake 3.20 or newer
-- A C++17 compiler
+- C++17 compiler
 - A licensed Gurobi installation with the C++ API
 
 Set `GUROBI_HOME` before configuring if Gurobi is not installed in a standard
