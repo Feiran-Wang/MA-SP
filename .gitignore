@@ -1,0 +1,31 @@
+# Build and runtime output
+build/
+output/
+logs/
+solutions/
+*.log
+
+# Compiler artifacts
+*.o
+*.obj
+*.a
+*.so
+*.so.*
+*.dylib
+*.dll
+*.exe
+
+# Local configuration and credentials
+.env
+.env.*
+*.lic
+gurobi.lic
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Editor and operating-system files
+.idea/
+.vscode/
+.DS_Store
