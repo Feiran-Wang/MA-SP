@@ -4,6 +4,10 @@ output/
 logs/
 solutions/
 *.log
+study_events.jsonl
+optimum_candidate.txt
+optimum.accepted
+optimum.rejected
 
 # Compiler artifacts
 *.o
