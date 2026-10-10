@@ -4,9 +4,7 @@
 
 MA-SP combines population-based search, local improvement, and a global route-pool
 set-partitioning model for the capacitated location-routing problem (CLRP) and its
-hard time-window variant (CLRP-TW). This repository provides the v22 solver core;
-experiment runners, analysis scripts, and tests are not included. An optimal SP
-solution is optimal only within the available route pool.
+hard time-window variant (CLRP-TW). This repository provides the v22 solver core.
 
 ## Build
 
