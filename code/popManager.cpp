@@ -140,7 +140,7 @@ void popManager:: copyAllData(Individual * s,Individual *ss){
 int popManager::addIndividual(Individual *indiv, int rankPop, bool isInitial, RoutePool* pool){
     lastAddAccepted = false;
     if (data->hardTimeWindows) {
-        if (!indiv->isFeasible || !hgasp2tw::validate(indiv, data)) return -1;
+        if (!indiv->isFeasible || !masptw::validate(indiv, data)) return -1;
         std::set<int> actual;
         for (int l = 0; l < numL; ++l) if (indiv->location[l].used) actual.insert(l + numV);
         rankPop = data->numLocConfiguration;

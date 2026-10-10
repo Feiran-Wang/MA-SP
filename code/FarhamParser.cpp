@@ -27,7 +27,7 @@ void width(const std::vector<double>& row, std::size_t expected,
 void read_data::readFarham(const std::string& path) {
     if (pathDepotCon != "NULL")
         throw std::runtime_error("Set F generates depot configurations internally; pass NULL as depot configuration path");
-    // Same declared-prefix semantics as HGA-SP's FarhamLrptwParser.
+    // Respect the declared customer/depot prefixes when parsing the file.
     std::ifstream input(path);
     if (!input) invalid(path, "cannot open file");
     std::vector<std::vector<double>> rows;

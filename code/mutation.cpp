@@ -373,7 +373,7 @@ void mutation::distanceRemove(){
 	}
 }
 void mutation::mutationRun(Individual *s){
-	if (data->hardTimeWindows) { hgasp2tw::mutate(s, data); return; }
+	if (data->hardTimeWindows) { masptw::mutate(s, data); return; }
 	this->s=s;
 	std::uniform_int_distribution<int> dist_mut(1, 1);
 	if (dist_mut(global_rng) != 0)

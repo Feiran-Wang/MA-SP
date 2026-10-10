@@ -1,5 +1,5 @@
-#ifndef HGAMP2_STUDY_EVENTS_H_
-#define HGAMP2_STUDY_EVENTS_H_
+#ifndef MASP_STUDY_EVENTS_H_
+#define MASP_STUDY_EVENTS_H_
 
 #include "Individual.h"
 #include <cmath>
@@ -27,11 +27,11 @@ public:
 
     explicit StudyEvents(read_data* d) : data(d), wallOrigin(monotonic()) {
         if (!d->experimentMode) return;
-        if (const char* origin = std::getenv("HGAMP2_RUN_MONOTONIC_START")) {
+        if (const char* origin = std::getenv("MASP_RUN_MONOTONIC_START")) {
             char* end = nullptr;
             const double parsed = std::strtod(origin, &end);
             if (!end || *end || !std::isfinite(parsed) || parsed > wallOrigin)
-                throw std::invalid_argument("Invalid HGAMP2_RUN_MONOTONIC_START");
+                throw std::invalid_argument("Invalid MASP_RUN_MONOTONIC_START");
             wallOrigin = parsed;
         }
         out.exceptions(std::ios::failbit | std::ios::badbit);

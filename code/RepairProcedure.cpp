@@ -948,7 +948,7 @@ void RepairProcedure::repairForInitialSolution(Individual *s){
 }
 void RepairProcedure::repairCapacityConstraint(Individual *subPop,double penaltyDepot, double penaltyVeh){
 	if (data->hardTimeWindows) {
-		subPop->isFeasible = hgasp2tw::repair(subPop, data);
+		subPop->isFeasible = masptw::repair(subPop, data);
 		return;
 	}
 	this->penaltyDepot=penaltyDepot;

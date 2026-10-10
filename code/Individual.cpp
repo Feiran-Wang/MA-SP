@@ -264,7 +264,7 @@ void Individual::outputSolution(){
 }
 void Individual::isRight(){// check the solution
 	if (data->hardTimeWindows) {
-		if (!hgasp2tw::validate(this, data)) throw std::runtime_error("invalid hard-time-window solution");
+		if (!masptw::validate(this, data)) throw std::runtime_error("invalid hard-time-window solution");
 		return;
 	}
 	double totalDis=0,totalFit=0;
@@ -319,7 +319,7 @@ void Individual::isRight(){// check the solution
 	}
 }
 void Individual::decideFeasible(){
-	if (data->hardTimeWindows) { isFeasible = hgasp2tw::validate(this, data); return; }
+	if (data->hardTimeWindows) { isFeasible = masptw::validate(this, data); return; }
 	for (int i=0;i<numL;i++){
 		if (location[i].used){
 			for (int j=0; j<location[i].maxVisit; j++){
@@ -368,9 +368,9 @@ void Individual::outputBestSolution(){
 	std::ofstream myfile(data->pathSolution);
 	myfile.exceptions(std::ios::failbit | std::ios::badbit);
 	if (data->experimentMode && !data->hardTimeWindows) myfile << std::setprecision(17)
-        << "# HGA-SP2 Set S study; native instance metric; internal zero-based IDs\n";
+        << "# MA-SP Set S study; native instance metric; internal zero-based IDs\n";
 	if (data->hardTimeWindows) myfile << std::setprecision(17)
-		<< "# HGA-SP2 Set F; hard windows; floor-euclidean cost/time; internal zero-based IDs\n";
+		<< "# MA-SP Set F; hard windows; floor-euclidean cost/time; internal zero-based IDs\n";
 	//double Distance=0;
 	if (myfile.is_open()){
 		myfile<<"The objective is: "<<std::endl;

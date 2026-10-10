@@ -3,9 +3,9 @@
 #include <numeric>
 #include <unordered_map>
 
-// Constraint-aware route-vector operators adapted from HGA-SP's
-// FeasibleInsertionFinder, mutation and LS. These run only on the Set F path.
-namespace hgasp2tw {
+// Constraint-aware route-vector construction, repair, mutation, and local search.
+// These operators run only on the Set F path.
+namespace masptw {
 namespace {
 using Plan = std::vector<StandaloneRoute>;
 bool expired(const read_data* d) {
@@ -378,7 +378,7 @@ void localSearch(Individual* s, read_data* d) {
                 if ((improved = accept(std::move(candidate)))) break;
             }
             if (improved || expired(d)) break;
-            // One neighbouring depot, matching HGA-SP Set F's depot width.
+            // Consider one neighbouring depot per route.
             // Empty routes allow a customer/whole route to change depot; the
             // objective accounts for both vehicle cost and closing the old depot.
             int depot = -1;
@@ -400,4 +400,4 @@ void localSearch(Individual* s, read_data* d) {
     }
     if (changed) s->rebuildFromSP(p);
 }
-} // namespace hgasp2tw
+} // namespace masptw

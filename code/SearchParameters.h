@@ -1,5 +1,5 @@
-#ifndef HGAMP2_SEARCH_PARAMETERS_H
-#define HGAMP2_SEARCH_PARAMETERS_H
+#ifndef MASP_SEARCH_PARAMETERS_H
+#define MASP_SEARCH_PARAMETERS_H
 
 #include <string>
 #include <algorithm>
@@ -44,29 +44,29 @@ struct SearchParameters {
     int requestedRoutePoolCapacity = 10000, requestedShawRemovalCount = 0;
 
     static bool setSExperimentEnabled() {
-        const char* value = std::getenv("HGAMP2_SETS_EXPERIMENT");
+        const char* value = std::getenv("MASP_SETS_EXPERIMENT");
         if (value && std::string(value) != "0" && std::string(value) != "1")
-            throw std::invalid_argument("HGAMP2_SETS_EXPERIMENT must be 0 or 1");
+            throw std::invalid_argument("MASP_SETS_EXPERIMENT must be 0 or 1");
         return value && std::string(value) == "1";
     }
 
     static bool experimentEnabled() {
-        const char* value = std::getenv("HGAMP2_SETF_EXPERIMENT");
+        const char* value = std::getenv("MASP_SETF_EXPERIMENT");
         if (value && std::string(value) != "0" && std::string(value) != "1")
-            throw std::invalid_argument("HGAMP2_SETF_EXPERIMENT must be 0 or 1");
+            throw std::invalid_argument("MASP_SETF_EXPERIMENT must be 0 or 1");
         const bool setFEnabled = value && std::string(value) == "1";
         const bool setSEnabled = setSExperimentEnabled();
         if (setFEnabled && setSEnabled)
             throw std::invalid_argument("Set S and Set F experiment modes are mutually exclusive");
         const bool enabled = setFEnabled || setSEnabled;
-        if (setSEnabled && std::getenv("HGAMP2_LAMBDA"))
-            throw std::invalid_argument("Set S uses HGAMP2_ALPHA, not HGAMP2_LAMBDA");
-        if (setFEnabled && std::getenv("HGAMP2_ALPHA"))
-            throw std::invalid_argument("Set F uses HGAMP2_LAMBDA, not HGAMP2_ALPHA");
+        if (setSEnabled && std::getenv("MASP_LAMBDA"))
+            throw std::invalid_argument("Set S uses MASP_ALPHA, not MASP_LAMBDA");
+        if (setFEnabled && std::getenv("MASP_ALPHA"))
+            throw std::invalid_argument("Set F uses MASP_LAMBDA, not MASP_ALPHA");
         if (!enabled) {
-            for (const char* name : {"HGAMP2_R_CFG", "HGAMP2_MU", "HGAMP2_LAMBDA", "HGAMP2_ALPHA",
-                    "HGAMP2_P_MUT", "HGAMP2_RHO", "HGAMP2_POOL", "HGAMP2_SP_POLICY",
-                    "HGAMP2_SP_FREQUENCY", "HGAMP2_SP_BETA", "HGAMP2_ARM", "HGAMP2_EVENT_PATH"})
+            for (const char* name : {"MASP_R_CFG", "MASP_MU", "MASP_LAMBDA", "MASP_ALPHA",
+                    "MASP_P_MUT", "MASP_RHO", "MASP_POOL", "MASP_SP_POLICY",
+                    "MASP_SP_FREQUENCY", "MASP_SP_BETA", "MASP_ARM", "MASP_EVENT_PATH"})
                 if (std::getenv(name))
                     throw std::invalid_argument(std::string(name) + " requires an explicit family experiment mode");
         }
@@ -174,38 +174,38 @@ struct SearchParameters {
         p.experimentMode = true;
         p.parameterProfile = setSStudy ? "set-s-study-v1" : "set-f-study-v1";
         p.requestedScreeningRepetitions = setSStudy
-            ? experimentInteger("HGAMP2_R_CFG", 15, {5, 10, 15, 20, 25})
-            : experimentInteger("HGAMP2_R_CFG", 3, {1, 2, 3, 5, 8});
+            ? experimentInteger("MASP_R_CFG", 15, {5, 10, 15, 20, 25})
+            : experimentInteger("MASP_R_CFG", 3, {1, 2, 3, 5, 8});
         p.requestedPopulationMinimum = setSStudy
-            ? experimentInteger("HGAMP2_MU", 30, {20, 25, 30, 40, 50})
-            : experimentInteger("HGAMP2_MU", 20, {10, 15, 20, 25, 30});
+            ? experimentInteger("MASP_MU", 30, {20, 25, 30, 40, 50})
+            : experimentInteger("MASP_MU", 20, {10, 15, 20, 25, 30});
         if (!setSStudy)
-            p.requestedNeighborhoodFraction = experimentDecimal("HGAMP2_LAMBDA", 0.30, {0.10, 0.20, 0.30, 0.40, 0.50});
-        p.requestedMutationPercent = experimentInteger("HGAMP2_P_MUT", 15, {5, 10, 15, 20, 25});
+            p.requestedNeighborhoodFraction = experimentDecimal("MASP_LAMBDA", 0.30, {0.10, 0.20, 0.30, 0.40, 0.50});
+        p.requestedMutationPercent = experimentInteger("MASP_P_MUT", 15, {5, 10, 15, 20, 25});
         p.requestedShawRemovalFraction = setSStudy
-            ? experimentDecimal("HGAMP2_RHO", 0.25, {0.10, 0.15, 0.25, 0.35, 0.45})
-            : experimentDecimal("HGAMP2_RHO", 0.20, {0.10, 0.15, 0.20, 0.25, 0.30});
+            ? experimentDecimal("MASP_RHO", 0.25, {0.10, 0.15, 0.25, 0.35, 0.45})
+            : experimentDecimal("MASP_RHO", 0.20, {0.10, 0.15, 0.20, 0.25, 0.30});
         p.requestedRoutePoolCapacity = setSStudy
-            ? experimentInteger("HGAMP2_POOL", 50000, {10000, 25000, 50000, 75000, 100000})
-            : experimentInteger("HGAMP2_POOL", 10000, {2000, 5000, 10000, 20000, 50000});
+            ? experimentInteger("MASP_POOL", 50000, {10000, 25000, 50000, 75000, 100000})
+            : experimentInteger("MASP_POOL", 10000, {2000, 5000, 10000, 20000, 50000});
         p.configurationSamples = p.requestedScreeningRepetitions;
         p.maxActiveConfigurations = setSStudy ? p.requestedScreeningRepetitions : 15;
         p.popMin = p.requestedPopulationMinimum;
         p.popMax = p.popMin + 30;
-        p.alpha = setSStudy ? experimentInteger("HGAMP2_ALPHA", 20, {10, 15, 20, 30, 40})
+        p.alpha = setSStudy ? experimentInteger("MASP_ALPHA", 20, {10, 15, 20, 30, 40})
             : std::min(customers - 1, std::max(1, int(std::ceil(p.requestedNeighborhoodFraction * (customers - 1)))));
         // The active branch uses draw >= threshold, not the historical > branch.
         p.mutationProb = 100 - p.requestedMutationPercent;
         p.ratioPerturbLength = p.requestedShawRemovalFraction;
         p.requestedShawRemovalCount = std::max(1, int(std::floor(p.ratioPerturbLength * customers)));
         p.spMaxPoolSize = p.requestedRoutePoolCapacity;
-        p.spTriggerFrequency = experimentInteger("HGAMP2_SP_FREQUENCY", 50001, {20001, 30001, 50001, 75001, 100001});
-        p.spBudgetMultiplier = experimentDecimal("HGAMP2_SP_BETA", 1.0, {0.25, 0.50, 1.0, 2.0, 4.0});
-        const char* policy = std::getenv("HGAMP2_SP_POLICY");
+        p.spTriggerFrequency = experimentInteger("MASP_SP_FREQUENCY", 50001, {20001, 30001, 50001, 75001, 100001});
+        p.spBudgetMultiplier = experimentDecimal("MASP_SP_BETA", 1.0, {0.25, 0.50, 1.0, 2.0, 4.0});
+        const char* policy = std::getenv("MASP_SP_POLICY");
         if (policy) {
             p.spPolicyId = policy;
             if (p.spPolicyId == "Early5" || p.spPolicyId == "Late5") {
-                if (std::getenv("HGAMP2_SP_FREQUENCY") || p.spBudgetMultiplier != 1.0)
+                if (std::getenv("MASP_SP_FREQUENCY") || p.spBudgetMultiplier != 1.0)
                     throw std::invalid_argument("Early5/Late5 require beta=1 and no periodic frequency override");
                 p.spTriggerFrequency = 0;
                 p.spSchedule = p.spPolicyId == "Early5"
@@ -216,16 +216,16 @@ struct SearchParameters {
                 for (int frequency : {20001, 30001, 50001, 75001, 100001}) {
                     for (const char* beta : {"0.25", "0.5", "1", "2", "4"}) {
                         if (p.spPolicyId != "F" + std::to_string(frequency) + "_b" + beta) continue;
-                        const double multiplier = parseExperimentDecimal(beta, "HGAMP2_SP_POLICY");
-                        if ((std::getenv("HGAMP2_SP_FREQUENCY") && p.spTriggerFrequency != frequency) ||
-                            (std::getenv("HGAMP2_SP_BETA") && p.spBudgetMultiplier != multiplier))
+                        const double multiplier = parseExperimentDecimal(beta, "MASP_SP_POLICY");
+                        if ((std::getenv("MASP_SP_FREQUENCY") && p.spTriggerFrequency != frequency) ||
+                            (std::getenv("MASP_SP_BETA") && p.spBudgetMultiplier != multiplier))
                             throw std::invalid_argument("SP policy conflicts with frequency/beta overrides");
                         p.spTriggerFrequency = frequency;
                         p.spBudgetMultiplier = multiplier;
                         found = true;
                     }
                 }
-                if (!found) throw std::invalid_argument("HGAMP2_SP_POLICY is not one of the 27 frozen policies");
+                if (!found) throw std::invalid_argument("MASP_SP_POLICY is not one of the 27 frozen policies");
             }
         }
         if (p.spSchedule.empty()) {
@@ -240,13 +240,13 @@ struct SearchParameters {
         const double base = setSStudy ? familySPTimeLimit
             : customers <= 10 ? 2.0 : customers <= 25 ? 5.0 : customers <= 40 ? 10.0 : 20.0;
         p.spTimeLimit = 5.0 * base * p.spBudgetMultiplier / p.spSchedule.size();
-        if (const char* arm = std::getenv("HGAMP2_ARM")) p.experimentArm = arm;
+        if (const char* arm = std::getenv("MASP_ARM")) p.experimentArm = arm;
         if (p.experimentArm != "Full" && p.experimentArm != "NoSP" &&
             p.experimentArm != "OneWaySP" && p.experimentArm != "NoSPInstall" &&
             p.experimentArm != "GlobalOnly")
-            throw std::invalid_argument("HGAMP2_ARM must name one of the four frozen study arms");
-        if (const char* events = std::getenv("HGAMP2_EVENT_PATH")) {
-            if (!*events) throw std::invalid_argument("HGAMP2_EVENT_PATH cannot be empty");
+            throw std::invalid_argument("MASP_ARM must name one of the four frozen study arms");
+        if (const char* events = std::getenv("MASP_EVENT_PATH")) {
+            if (!*events) throw std::invalid_argument("MASP_EVENT_PATH cannot be empty");
             p.experimentEventsPath = events;
         }
         return p;

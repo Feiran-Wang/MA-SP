@@ -1,15 +1,15 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "implementation": "MA-SP v22 native solver",
   "source_study": "masp-v22-20260928",
   "export_date": "2026-10-10",
   "source_local_path": "/home/wfr/workspace/HGA-SP2/experiments/manifests/studies/ver-paper/masp-v22-20260928/solver-source/masp",
   "source_cpp_h_files": 31,
-  "source_content_policy": "All 31 C++ source/header files copied without changes; only repository build and documentation are adapted.",
+  "source_content_policy": "The 31-file v22 core is retained with mechanical MA-SP naming adaptations to environment variables, guards, the time-window namespace, log identifiers, and comments. Search logic and numerical parameters are unchanged.",
   "solver_backend": "Gurobi",
   "historical_gurobi_version": "13.0.2",
   "primary_set_s_runtime": {
-    "mode": "HGAMP2_SETS_EXPERIMENT=1",
+    "mode": "MASP_SETS_EXPERIMENT=1",
     "arm": "Full",
     "K": 15,
     "mu": 20,
@@ -33,7 +33,7 @@
     "sp_time_limit_seconds": 10,
     "evidence_scope": "12 instances x 3 seeds; completed TW 36-run experiment; not a new v22 TW benchmark"
   },
-  "excluded": "Experiment runners, analysis scripts, test scripts and fixtures, HGAMP comparator, raw results, binaries and solver runtime libraries.",
+  "excluded": "Experiment runners, analysis scripts, test scripts and fixtures, comparator implementations, raw results, binaries and solver runtime libraries.",
   "historical_evidence_paths": {
     "v22_entry": "/home/wfr/workspace/HGA-SP2/experiments/manifests/studies/ver-paper/masp-v22-20260928/README.md",
     "tw_36_run_results": "/home/wfr/workspace/HGA-SP2/experiments/manifests/studies/ver-paper/hga-sp2-family-profiles-v1-20260916.results.md"
@@ -42,157 +42,195 @@
     {
       "path": "code/ExperimentClock.h",
       "source_path": "masp/ExperimentClock.h",
-      "sha256": "e1755493af0b61a8c3737ba277cde3d1d20310e3b44a87f4f24bf30d4c123b6d"
+      "sha256": "e1755493af0b61a8c3737ba277cde3d1d20310e3b44a87f4f24bf30d4c123b6d",
+      "source_sha256": "e1755493af0b61a8c3737ba277cde3d1d20310e3b44a87f4f24bf30d4c123b6d"
     },
     {
       "path": "code/FarhamParser.cpp",
       "source_path": "masp/FarhamParser.cpp",
-      "sha256": "75e3ed09b2ce819769b7a08336cef28c9c741f10bcaf1775612a8c4e22475ec8"
+      "sha256": "b5459e0ded42d25ad2180867f476c26f90b0d365330767a1df813658a32c5095",
+      "source_sha256": "75e3ed09b2ce819769b7a08336cef28c9c741f10bcaf1775612a8c4e22475ec8"
     },
     {
       "path": "code/Individual.cpp",
       "source_path": "masp/Individual.cpp",
-      "sha256": "0280ad227bfc802e8d0b6da431e2aebb4f78be3cba4bd83b2f5c29d6b170fef2"
+      "sha256": "a003a0a570a342e0cf2784b214c7f6993a794827a3bddde48a28adc8715b9425",
+      "source_sha256": "0280ad227bfc802e8d0b6da431e2aebb4f78be3cba4bd83b2f5c29d6b170fef2"
     },
     {
       "path": "code/Individual.h",
       "source_path": "masp/Individual.h",
-      "sha256": "7ba014bdd05680d53928b2d7689807b889152fcb606f028ac682393f56b6417a"
+      "sha256": "7ba014bdd05680d53928b2d7689807b889152fcb606f028ac682393f56b6417a",
+      "source_sha256": "7ba014bdd05680d53928b2d7689807b889152fcb606f028ac682393f56b6417a"
     },
     {
       "path": "code/LS.cpp",
       "source_path": "masp/LS.cpp",
-      "sha256": "50b8be3c42abdc0baa0d3549906ca2868e4c5efeb497581def6a90274c065f85"
+      "sha256": "45e71d286291056ec947eb0996d49723a77b6671a170b4a60b38dbc3beec5383",
+      "source_sha256": "50b8be3c42abdc0baa0d3549906ca2868e4c5efeb497581def6a90274c065f85"
     },
     {
       "path": "code/LS.h",
       "source_path": "masp/LS.h",
-      "sha256": "58f802cf1abf81811985673d872890a528730e4f602004ffa4f15cfbc0e5a1a4"
+      "sha256": "58f802cf1abf81811985673d872890a528730e4f602004ffa4f15cfbc0e5a1a4",
+      "source_sha256": "58f802cf1abf81811985673d872890a528730e4f602004ffa4f15cfbc0e5a1a4"
     },
     {
       "path": "code/RepairProcedure.cpp",
       "source_path": "masp/RepairProcedure.cpp",
-      "sha256": "45e7b166fa39e69b416a207a87610697b547ece05a6c59197a6ff726a2afcc33"
+      "sha256": "5b7839ebb1778be1fd3522c06628efa37ed5407c6db07a1fb13b112e4fff976b",
+      "source_sha256": "45e7b166fa39e69b416a207a87610697b547ece05a6c59197a6ff726a2afcc33"
     },
     {
       "path": "code/RepairProcedure.h",
       "source_path": "masp/RepairProcedure.h",
-      "sha256": "d454ca8fe61ad71084c6203e33e09d940dd78d7d86c2611cf842600c0fa5b8e4"
+      "sha256": "d454ca8fe61ad71084c6203e33e09d940dd78d7d86c2611cf842600c0fa5b8e4",
+      "source_sha256": "d454ca8fe61ad71084c6203e33e09d940dd78d7d86c2611cf842600c0fa5b8e4"
     },
     {
       "path": "code/RoutePool.cpp",
       "source_path": "masp/RoutePool.cpp",
-      "sha256": "a48478ce14e10ee1b602e182f6c0037c3f8ca5a44ff8c3767f1ad4c42c1b32e9"
+      "sha256": "a48478ce14e10ee1b602e182f6c0037c3f8ca5a44ff8c3767f1ad4c42c1b32e9",
+      "source_sha256": "a48478ce14e10ee1b602e182f6c0037c3f8ca5a44ff8c3767f1ad4c42c1b32e9"
     },
     {
       "path": "code/RoutePool.h",
       "source_path": "masp/RoutePool.h",
-      "sha256": "49138ee81ac0ca9bd12bb0d2049d096feeafd00d6c7aefe5d61d968bdce14a87"
+      "sha256": "49138ee81ac0ca9bd12bb0d2049d096feeafd00d6c7aefe5d61d968bdce14a87",
+      "source_sha256": "49138ee81ac0ca9bd12bb0d2049d096feeafd00d6c7aefe5d61d968bdce14a87"
     },
     {
       "path": "code/SPSolver.cpp",
       "source_path": "masp/SPSolver.cpp",
-      "sha256": "2c781e906c84eafb0dab18038ec2b1e928603b1271c383119c28c96ee022be97"
+      "sha256": "2c781e906c84eafb0dab18038ec2b1e928603b1271c383119c28c96ee022be97",
+      "source_sha256": "2c781e906c84eafb0dab18038ec2b1e928603b1271c383119c28c96ee022be97"
     },
     {
       "path": "code/SPSolver.h",
       "source_path": "masp/SPSolver.h",
-      "sha256": "f4b40854ac40d51f1fd02872760bca7c452eb1f925fb86c0bd7fe4d7d2372e24"
+      "sha256": "f4b40854ac40d51f1fd02872760bca7c452eb1f925fb86c0bd7fe4d7d2372e24",
+      "source_sha256": "f4b40854ac40d51f1fd02872760bca7c452eb1f925fb86c0bd7fe4d7d2372e24"
     },
     {
       "path": "code/SearchParameters.h",
       "source_path": "masp/SearchParameters.h",
-      "sha256": "571db44279ac890562478c45b19dbef2b212f51998f28d660ce626c16424f958"
+      "sha256": "67ecf2bb057240c8dccb0bbda1f9c6880e73b316b6630e63cc135fd6307df19c",
+      "source_sha256": "571db44279ac890562478c45b19dbef2b212f51998f28d660ce626c16424f958"
     },
     {
       "path": "code/StudyEvents.h",
       "source_path": "masp/StudyEvents.h",
-      "sha256": "8cc501aae6b530d06e28d0543cca8ed67fc6e328ee2d98ee381186eb1bd081b2"
+      "sha256": "7136e48c473e1e125bd8d8aa56b1b6fcc3fd904f7dfa007611417b47a5fbbbbf",
+      "source_sha256": "8cc501aae6b530d06e28d0543cca8ed67fc6e328ee2d98ee381186eb1bd081b2"
     },
     {
       "path": "code/TimeWindowOperators.cpp",
       "source_path": "masp/TimeWindowOperators.cpp",
-      "sha256": "b6f90a3a5002ca666a48e9cf9feb8bcbfd96402f6e9d2d90fdcf63e4cb955150"
+      "sha256": "30c776c7e3969985cf2df7681bae472d4431b7af5621a5fbd5888987632ce03b",
+      "source_sha256": "b6f90a3a5002ca666a48e9cf9feb8bcbfd96402f6e9d2d90fdcf63e4cb955150"
     },
     {
       "path": "code/TimeWindowOperators.h",
       "source_path": "masp/TimeWindowOperators.h",
-      "sha256": "3ae0212e4e30ecd2097897139d34038e9fb6f00f0afa4cb3001ccc04c506e373"
+      "sha256": "e82054f9866323bd0616d84bb27c3edb0b203883a20fda77565a68664ba1edf6",
+      "source_sha256": "3ae0212e4e30ecd2097897139d34038e9fb6f00f0afa4cb3001ccc04c506e373"
     },
     {
       "path": "code/basic.h",
       "source_path": "masp/basic.h",
-      "sha256": "834e1e78d0285438b6b1040ddc178b6e59586fe0c9ffb49cd76a7a608ffc491b"
+      "sha256": "834e1e78d0285438b6b1040ddc178b6e59586fe0c9ffb49cd76a7a608ffc491b",
+      "source_sha256": "834e1e78d0285438b6b1040ddc178b6e59586fe0c9ffb49cd76a7a608ffc491b"
     },
     {
       "path": "code/commandline.h",
       "source_path": "masp/commandline.h",
-      "sha256": "51d309413d4396e6664a8ee7296f216a39f11b0d61b401274c9a54c06032c39c"
+      "sha256": "51d309413d4396e6664a8ee7296f216a39f11b0d61b401274c9a54c06032c39c",
+      "source_sha256": "51d309413d4396e6664a8ee7296f216a39f11b0d61b401274c9a54c06032c39c"
     },
     {
       "path": "code/crossover.cpp",
       "source_path": "masp/crossover.cpp",
-      "sha256": "cfd72a4954080260bf8aab1660ad474aafe48b608c934d04d4310d4f492b2125"
+      "sha256": "cfd72a4954080260bf8aab1660ad474aafe48b608c934d04d4310d4f492b2125",
+      "source_sha256": "cfd72a4954080260bf8aab1660ad474aafe48b608c934d04d4310d4f492b2125"
     },
     {
       "path": "code/crossover.h",
       "source_path": "masp/crossover.h",
-      "sha256": "5e1e031bf2b19e921b61c408a4d4cbaaf9cd9e0fa2504f7cc2b376da6029365b"
+      "sha256": "5e1e031bf2b19e921b61c408a4d4cbaaf9cd9e0fa2504f7cc2b376da6029365b",
+      "source_sha256": "5e1e031bf2b19e921b61c408a4d4cbaaf9cd9e0fa2504f7cc2b376da6029365b"
     },
     {
       "path": "code/initialsol.cpp",
       "source_path": "masp/initialsol.cpp",
-      "sha256": "84bb5f50aad1fb1bf93937fa7b6defb283b9fabc7ed65d061d3fb1ea53bbc7b2"
+      "sha256": "5f843e2ccb8de180e6eb031abaca8c3b9feb90139607b1c17acb4812ec134a01",
+      "source_sha256": "84bb5f50aad1fb1bf93937fa7b6defb283b9fabc7ed65d061d3fb1ea53bbc7b2"
     },
     {
       "path": "code/initialsol.h",
       "source_path": "masp/initialsol.h",
-      "sha256": "b14608c5d45dc1db064720a565566405e2fa739357eb2f4417073ae20bfc5edd"
+      "sha256": "b14608c5d45dc1db064720a565566405e2fa739357eb2f4417073ae20bfc5edd",
+      "source_sha256": "b14608c5d45dc1db064720a565566405e2fa739357eb2f4417073ae20bfc5edd"
     },
     {
       "path": "code/main.cpp",
       "source_path": "masp/main.cpp",
-      "sha256": "a59ec1d58b55c977a8e0e91977ffad03b7e361948736a0f80c95996cb224acbb"
+      "sha256": "e61aa95408d6e08699030b2d3970a8cbdaa98d8d0c1ddc3e54f29b2910ef5d8d",
+      "source_sha256": "a59ec1d58b55c977a8e0e91977ffad03b7e361948736a0f80c95996cb224acbb"
     },
     {
       "path": "code/mutation.cpp",
       "source_path": "masp/mutation.cpp",
-      "sha256": "18d34172340b08fcb50255576f3ef2de1bfef009f2654ff840734b003646b736"
+      "sha256": "6be1787beb73d1c8ee79af9246a2d6c511dcb8201d102b547b44586bc84c137e",
+      "source_sha256": "18d34172340b08fcb50255576f3ef2de1bfef009f2654ff840734b003646b736"
     },
     {
       "path": "code/mutation.h",
       "source_path": "masp/mutation.h",
-      "sha256": "afa9636cf33ba81a2282ae1d158442d4f4aa03e93022e3b55b09ad8630df79a3"
+      "sha256": "afa9636cf33ba81a2282ae1d158442d4f4aa03e93022e3b55b09ad8630df79a3",
+      "source_sha256": "afa9636cf33ba81a2282ae1d158442d4f4aa03e93022e3b55b09ad8630df79a3"
     },
     {
       "path": "code/popManager.cpp",
       "source_path": "masp/popManager.cpp",
-      "sha256": "9819e19ce3793a9cbf433f04c248a33e233a19ae7fd6514d9f5c4037e935b10e"
+      "sha256": "990ff889ba229532eba90d77a7ad9b6a236a005549f5a690d687ac274674cac9",
+      "source_sha256": "9819e19ce3793a9cbf433f04c248a33e233a19ae7fd6514d9f5c4037e935b10e"
     },
     {
       "path": "code/popManager.h",
       "source_path": "masp/popManager.h",
-      "sha256": "7ea67e8f9673202eeab2ac2de0d63f041e6538ebc943ec337daf3c7f5dcf7267"
+      "sha256": "7ea67e8f9673202eeab2ac2de0d63f041e6538ebc943ec337daf3c7f5dcf7267",
+      "source_sha256": "7ea67e8f9673202eeab2ac2de0d63f041e6538ebc943ec337daf3c7f5dcf7267"
     },
     {
       "path": "code/read_data.cpp",
       "source_path": "masp/read_data.cpp",
-      "sha256": "205b33e47c0d84dd5861156303774cda3fa6af869031aa4cd9da185446f2df02"
+      "sha256": "205b33e47c0d84dd5861156303774cda3fa6af869031aa4cd9da185446f2df02",
+      "source_sha256": "205b33e47c0d84dd5861156303774cda3fa6af869031aa4cd9da185446f2df02"
     },
     {
       "path": "code/read_data.h",
       "source_path": "masp/read_data.h",
-      "sha256": "4d37d3dbe478fc88a5a6092ea03f719c048d2527ccaec385b39e899e3cde19d8"
+      "sha256": "4d37d3dbe478fc88a5a6092ea03f719c048d2527ccaec385b39e899e3cde19d8",
+      "source_sha256": "4d37d3dbe478fc88a5a6092ea03f719c048d2527ccaec385b39e899e3cde19d8"
     },
     {
       "path": "code/solution.cpp",
       "source_path": "masp/solution.cpp",
-      "sha256": "ccc24cd1a865dabc66ec5ab3e6dd0a24155c1c460e678c09d918ffa67871a4b6"
+      "sha256": "ccc24cd1a865dabc66ec5ab3e6dd0a24155c1c460e678c09d918ffa67871a4b6",
+      "source_sha256": "ccc24cd1a865dabc66ec5ab3e6dd0a24155c1c460e678c09d918ffa67871a4b6"
     },
     {
       "path": "code/solution.h",
       "source_path": "masp/solution.h",
-      "sha256": "5fc0d3616a29717047612a7b6e91a327782174ec826760164421a7524e839313"
+      "sha256": "5fc0d3616a29717047612a7b6e91a327782174ec826760164421a7524e839313",
+      "source_sha256": "5fc0d3616a29717047612a7b6e91a327782174ec826760164421a7524e839313"
     }
+  ],
+  "runtime_environment_prefix": "MASP_",
+  "time_window_namespace": "masptw",
+  "algorithm_log_identifiers": [
+    "masp-v22-setf-study",
+    "masp-v22-sets-study",
+    "masp-v22-family-profiles"
   ]
 }

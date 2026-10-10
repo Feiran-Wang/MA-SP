@@ -768,7 +768,7 @@ void LS::loadSolution(){
 }
 void LS::local_search_run(Individual *s,double penaltyDepot, double penaltyVeh){
 	if (data->hardTimeWindows) {
-		if (s->isFeasible) hgasp2tw::localSearch(s, data);
+		if (s->isFeasible) masptw::localSearch(s, data);
 		return;
 	}
 	this->penaltyDepot = penaltyDepot;

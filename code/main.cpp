@@ -25,7 +25,7 @@ int main(int argc, char*argv[]){
 	}
 	if (data->experimentMode) std::cout << std::setprecision(17);
 	std::cout << "[PROFILE] algorithm="
-	          << (data->experimentMode ? (data->hardTimeWindows ? "hga-sp2-setf-study-v1" : "hga-sp2-sets-study-v3") : "hga-sp2-family-profiles-v1")
+	          << (data->experimentMode ? (data->hardTimeWindows ? "masp-v22-setf-study" : "masp-v22-sets-study") : "masp-v22-family-profiles")
 	          << " parameters=" << data->parameterProfile
 	          << (data->hardTimeWindows ? " metric=farham-floor-euclidean" : "")
 	          << " hard_time_windows=" << data->hardTimeWindows

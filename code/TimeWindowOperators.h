@@ -1,8 +1,8 @@
-#ifndef HGASP2_TIME_WINDOW_OPERATORS_H
-#define HGASP2_TIME_WINDOW_OPERATORS_H
+#ifndef MASP_TIME_WINDOW_OPERATORS_H
+#define MASP_TIME_WINDOW_OPERATORS_H
 class Individual;
 class read_data;
-namespace hgasp2tw {
+namespace masptw {
 bool construct(Individual*, read_data*, int rankPop);
 bool repair(Individual*, read_data*);
 void mutate(Individual*, read_data*);

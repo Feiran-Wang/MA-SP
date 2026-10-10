@@ -426,7 +426,7 @@ void initial_sol::remedyTheSolution(std::vector<int> location){// to use the inf
 }
 void initial_sol::initial_solution(Individual *s, int rankPop){
 	if (data->hardTimeWindows) {
-		s->isFeasible = hgasp2tw::construct(s, data, rankPop);
+		s->isFeasible = masptw::construct(s, data, rankPop);
 		return;
 	}
 	this->s=s;
