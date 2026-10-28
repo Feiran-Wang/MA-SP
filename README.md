@@ -39,22 +39,6 @@ Runtime options use the `MASP_*` environment namespace; supported values are
 listed in [SearchParameters.h](code/SearchParameters.h). Study mode requires the
 60,000-second CPU limit and 300,000 main-counter limit shown above.
 
-## Parameter profiles
-
-| Profile | K | μ | α | Mutation | ρ | Route-pool cap |
-|---|---:|---:|---:|---:|---:|---:|
-| Set S: v22 Full | 15 | 20 | 20 | 15% | 0.10 | 25,000 |
-| Set S: ordinary defaults | 15 | 30 | 20 | 15% | 0.25 | 50,000 |
-| Set F (TW): ordinary defaults | 3 | 30 | 10 | 15% | 0.25 | 10,000 |
-
-K denotes construction repetitions per candidate depot configuration; μ is the
-minimum population size, α the neighborhood width, and ρ the Shaw removal fraction.
-The TW tuple **(3, 30, 10, 15%, 0.25, 10000)** corresponds to the completed **36-run
-experiment (12 instances × 3 seeds)**. Use the ordinary Set F profile for this
-configuration. Its SP trigger interval is 50,001 main-counter increments and its
-MIP time limit is 10 seconds for the 10/25/40/50-customer instances. Source lineage
-and historical evidence pointers are recorded in [provenance.json](provenance.json).
-
 ## License
 
 MIT License; see [LICENSE](LICENSE). Maintainer: Feiran Wang. Original source
