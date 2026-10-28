@@ -73,4 +73,4 @@ the pool model's optimum.
 
 ## License
 
-MIT License; see [LICENSE](LICENSE). Author: Feiran.
+MIT License; see [LICENSE](LICENSE).
