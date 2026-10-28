@@ -41,6 +41,25 @@ bool complete(Plan& p, const read_data* d) {
     }
     return std::all_of(seen.begin(), seen.end(), [](int n) { return n == 1; });
 }
+double planObjective(const Plan& p, const read_data* d, double* travelOut = nullptr) {
+    double travel = 0, opening = 0, vehicles = 0;
+    // Match Individual::evaluationDis: depot/slot/arc order, then component sums.
+    for (int l = 0; l < d->numL; ++l) {
+        int count = 0;
+        for (const auto& r : p) if (r.locId == l && !r.sequence.empty()) {
+            ++count;
+            int previous = d->numV + l;
+            for (int customer : r.sequence) {
+                travel += d->D[previous][customer];
+                previous = customer;
+            }
+            travel += d->D[previous][d->numV + l];
+        }
+        if (count) { opening += d->openCostLoc[d->numV + l]; vehicles += d->usingCostVeh * count; }
+    }
+    if (travelOut) *travelOut = travel;
+    return opening + vehicles + travel;
+}
 void compact(Plan& p) {
     p.erase(std::remove_if(p.begin(), p.end(), [](const StandaloneRoute& r) {
         return r.sequence.empty();
@@ -171,16 +190,14 @@ bool recreate(Plan& p, read_data* d, const std::vector<int>& allowed, int attemp
 bool validate(const Individual* s, const read_data* d) {
     Plan p;
     if (!s || !d || !extract(s, d, p, true) || !complete(p, d)) return false;
-    double travel = 0, objective = 0;
+    double travel = 0;
+    const double objective = planObjective(p, d, &travel);
     std::vector<int> loads(d->numL, 0), counts(d->numL, 0);
     for (const auto& r : p) {
-        travel += r.routeCost;
         loads[r.locId] += r.totalLoad;
         ++counts[r.locId];
     }
-    objective = travel + d->usingCostVeh * p.size();
     for (int l = 0; l < d->numL; ++l) {
-        if (counts[l]) objective += d->openCostLoc[d->numV + l];
         if (s->location[l].used != (counts[l] > 0) ||
             s->location[l].remainInven != loads[l] ||
             s->location[l].splitTime != counts[l]) return false;
@@ -292,16 +309,7 @@ void mutate(Individual* s, read_data* d) {
 void localSearch(Individual* s, read_data* d) {
     Plan p;
     if (!extract(s, d, p, true) || !complete(p, d)) return;
-    auto objective = [&](const Plan& plan) {
-        double cost = 0;
-        std::vector<bool> open(d->numL, false);
-        for (const auto& r : plan) if (!r.sequence.empty()) {
-            cost += r.routeCost + d->usingCostVeh;
-            if (!open[r.locId]) cost += d->openCostLoc[d->numV + r.locId];
-            open[r.locId] = true;
-        }
-        return cost;
-    };
+    auto objective = [&](const Plan& plan) { return planObjective(plan, d); };
     double current = objective(p);
     bool changed = false;
     std::vector<std::vector<int>> neighbours(d->numV);

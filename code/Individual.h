@@ -13,7 +13,7 @@ struct Route{
 	bool used;
 	int cour;
 	int nbClients;
-	int whenLastModified;				// "When" this route has been last modified
+	int whenLastModified = -1;			// "When" this route has been last modified
 	Node *depot;
 	Node *endDepot;
 	NodeDepot *whichLocation;
@@ -57,7 +57,6 @@ public:
 	virtual ~Individual();
 	void define(read_data *data);
 	void evaluationDis();
-	void getSaturationDegree();
 	void initilization();
 	void updateRouteInfor(int &r,int nbMoves);
 	void updateLocationInfor(int &ll);
@@ -88,8 +87,6 @@ public:
 	bool isFeasible;
 	std::multiset < std::pair < double, Individual* > > indivsPerProximity ;	// The other individuals in the population, ordered by increasing proximity (the set container follows a natural ordering based on the first value of the pair)
 	int maxVnum;
-	std::set<std::pair<double,int>> saturatLoc;// the first is degree, the second is the order of location.
-	std::set<std::pair<double,int>> saturatRoute;// the first is degree, the second is the order of route.
 private:
 	read_data *data;
 	int numV;

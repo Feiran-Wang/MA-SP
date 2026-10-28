@@ -13,177 +13,12 @@ initial_sol::initial_sol(read_data * data, RepairProcedure *repair) {
 	this->numV = data->numV;
 	this->numL = data->numL;
 	this->numC = data->numC;
-	customer=new int [numV];
-	for (int i=0;i<numV;i++)
-		sque.push_back(i);
 	locUsed = new bool [numC];
 	cusUsed = new bool [numV];
 }
 initial_sol::~initial_sol() {
-	delete [] customer;
 	delete [] locUsed;
 	delete [] cusUsed;
-}
-void initial_sol::insertCustomerToLocation(int &customer, int &loc, int newCus){
-	Node *U = &s->client[customer];
-	if (newCus > 0){
-		Node *V = &s->client[newCus];
-		insertClient(U, V);
-		s->updateRouteInfor(U->route->cour,-1);
-		s->updateLocationInfor(U->route->whichLocation->cour);
-		return;
-	}
-	for (int i=0;i<s->location[loc].maxVisit; i++){
-		if (!(s->location[loc].depots[i].route->load + data->demCus[customer] > data->vehCap)){
-			Node *p= s->location[loc].depots[i].next;
-			if (p != NULL){
-				Node *V = NULL;
-				double delta=Max;
-				double tem =  data->D[customer][s->location[loc].cour] + data->D[customer][p->cour] - data->D[p->cour][s->location[loc].cour];
-				if ( tem < delta){
-					delta = tem;
-					V=&s->location[loc].depots[i];
-				}
-				while(1){
-					p=p->next;
-					if (p->next->isDepot)break;
-					tem = data->D[p->pre->cour][customer] + data->D[customer][p->cour] - data->D[p->pre->cour][p->cour];
-					if (tem < delta){
-						delta = tem;
-						V = p->pre;
-					}
-				}
-		//		tem = data->D[p->cour][customer] + data->D[customer][s->location[loc].cour] - data->D[p->cour][s->location[loc].cour];
-		//		if (tem < delta){
-		//			delta = tem;
-		//			V = p;
-		//		}
-				insertClient(U, V);
-				s->updateRouteInfor(U->route->cour,-1);
-				s->updateLocationInfor(U->route->whichLocation->cour);
-			}
-			else{// open a new route
-				Node *V = &s->location[loc].depots[i];
-				insertClient(U, V);
-				U->route->used = true;
-				s->location[loc].used = true;
-				s->location[loc].splitTime++;
-				s->updateRouteInfor(U->route->cour,-1);
-				s->updateLocationInfor(U->route->whichLocation->cour);
-			}
-			return;
-		}
-	}
-}
-void initial_sol::greedyInsert(){
-	s->initilization();
-	for (int i=0; i<numV; i++)	customer[i]=0;
-	RandomShuffle(sque);// to random all customers
-	int cus;
-	for (int i=0;i<numV;i++){
-		cus=sque[i];
-		if (! customer[cus]){
-			int whichLocation = -1;// three conditions: if the location is open and has enough free capacity, if all locations are closed.
-			if ((int)data->customerToLoc[cus].size() > 0){
-				// find the most near depot.
-				for (int j = 0; j< (int)data->customerToLoc[cus].size(); j++){
-					int location = data->customerToLoc[cus][j] - numV;
-					if (!s->location[location].used && whichLocation < 0){
-						whichLocation = location;
-						break;
-					}
-					if (s->location[location].used){
-						if (s->location[location].remainInven + data->demCus[cus] > s->location[location].inventory)
-							continue;
-						else{
-							whichLocation = location;
-							break;
-						}
-					}
-				}
-				insertCustomerToLocation(cus, whichLocation, -1);
-				customer[cus] = 1;
-				int currentCus = cus;
-				int targetCus;
-				while(1){
-					int j;
-					for (j=0; j<(int)data->edgeNode[currentCus].size();j++){
-						targetCus = data->edgeNode[currentCus][j];
-						if (targetCus >= numV) continue;// target the depot
-						if (customer[targetCus] == 0){
-							if (s->client[currentCus].route->whichLocation->remainInven + data->demCus[targetCus] < s->client[currentCus].route->whichLocation->inventory){
-								if (s->client[currentCus].route->load + data->demCus[targetCus] < data->vehCap){
-									insertCustomerToLocation(targetCus, whichLocation, currentCus);
-									customer[targetCus] = 1;
-									currentCus = targetCus;
-									break;
-								}
-								else{
-									if (std::find(data->customerToLoc[targetCus].begin(), data->customerToLoc[targetCus].end(), whichLocation+numV) != data->customerToLoc[targetCus].end()){
-										insertCustomerToLocation(targetCus, whichLocation, -1);
-										customer [targetCus] = 1;
-										currentCus = targetCus;
-										break;
-									}
-									else{
-										whichLocation =-1;
-										for (int k = 0; k< (int)data->customerToLoc[targetCus].size(); k++){
-											int location = data->customerToLoc[targetCus][k];
-											if (!s->location[location-numV].used ){
-												whichLocation = location - numV;
-												break;
-											}
-											else{
-												if (s->location[location-numV].remainInven + data->demCus[targetCus] > s->location[location-numV].inventory)
-													continue;
-												else{
-													whichLocation = location - numV;
-													break;
-												}
-											}
-										}
-										if (whichLocation == -1)break;
-										insertCustomerToLocation(targetCus, whichLocation, -1);
-										customer [targetCus] = 1;
-										currentCus = targetCus;
-										break;
-									}
-								}
-							}
-						}
-					}
-					if (whichLocation ==-1 || j == (int)data->edgeNode[currentCus].size())break;
-				}
-			}
-		}
-	}
-	//to save all remaining unrouted customers
-	double moveGain = Max, minGain = Max; // 初始化 moveGain
-	Node *nodeV = NULL;
-	for (int i=0;i<numV;i++){
-		if (customer[i] == 0){
-			minGain = Max;
-			for (int j=0;j<(int)data->edgeNode[i].size();j++){
-				if (data->edgeNode[i][j] >= numV || customer[data->edgeNode[i][j]])continue;
-				if (s->client[data->edgeNode[i][j]].route->whichLocation->remainInven + data->demCus[i] > s->client[data->edgeNode[i][j]].route->whichLocation->inventory
-						|| s->client[data->edgeNode[i][j]].route->load + data->demCus[i] > data->vehCap) continue;
-				if (customer[data->edgeNode[i][j]] != 0){
-					if (s->client[data->edgeNode[i][j]].next->isDepot)
-						moveGain = data->D[s->client[data->edgeNode[i][j]].next->cour][i] + data->D[i][data->edgeNode[i][j]] - data->D[data->edgeNode[i][j]][s->client[data->edgeNode[i][j]].next->cour];
-					else
-						moveGain = data->D[data->edgeNode[i][j]][i] + data->D[i][s->client[data->edgeNode[i][j]].next->cour] - data->D[data->edgeNode[i][j]][s->client[data->edgeNode[i][j]].next->cour];
-				}
-				if (moveGain < minGain){
-					minGain = moveGain;
-					nodeV = &s->client[data->edgeNode[i][j]];
-				}
-			}
-			Node * nodeU = &s->client[i];
-			insertClient(nodeU, nodeV);
-			s->updateRouteInfor(nodeU->route->cour,-1);
-			s->updateLocationInfor(nodeU->route->whichLocation->cour);
-		}
-	}
 }
 void initial_sol::insertClient(Node *U, Node *V){
 	if (!V->route->used){// insert into a empty route;
@@ -216,7 +51,6 @@ void initial_sol::newGreedyInsert(){
 		RandomShuffle(data->edgeNode[i]);
 
 	for (int i=numV; i<numC;i++) locUsed[i] = false;
-	// if the inventory of a location can meet all demands, we choose this location in first step;
 	int tarLoc = -1;
 	for (int i=numV;i<numC;i++){// if there is unlimited capacity location
 		if (data->invLoc[i] >= data->totalDemand){
@@ -227,7 +61,6 @@ void initial_sol::newGreedyInsert(){
 	for (int i=0;i<numV;i++) cusUsed[i] = false;
 	double y;int rank;
 	if (rankPop > -1 && rankPop < data->numLocConfiguration && (int)data->compactLocConfigure[rankPop].size() > 0){
-	//	y=double(rand()%10000/10000.0);
 	//	rank=int(pow(y,data->determine_para)*(int)data->compactLocConfigure.size());// this location configuration
 		auto it = data->compactLocConfigure[rankPop].begin();
 		std::vector<int>location;
@@ -245,12 +78,6 @@ void initial_sol::newGreedyInsert(){
 			remedyTheSolution(location);
 	}
 	// without the perfect compact location configuration
-	/*
-	std::uniform_int_distribution<int> dist_3(0, 2);
-	int rand_num;
-	if (dist_3(global_rng) == 1) rand_num = 1;
-	else rand_num = 0;
-	*/
 
 	std::vector<int>listLoc1;
 	while(remainDem != 0){
@@ -261,12 +88,8 @@ void initial_sol::newGreedyInsert(){
 			for (int i=0;i<numL;i++)
 				if (!locUsed[data->locRatio[i].second])listLoc1.push_back(data->locRatio[i].second);
 			//
-	//		if (rand_num)// add the randomness
-	//			rank = rand()%(int)listLoc1.size();
-	//		else{
 				y = RandomDouble(0.0, 1.0);
 				rank = int(pow(y, data->determine_para) * (int)listLoc1.size());
-	//		}
 			tarLoc = listLoc1[rank];
 			insertCusToLoc(tarLoc);
 		}
@@ -279,7 +102,6 @@ void initial_sol::newGreedyInsert(){
 		int usedInventory = 0;
 		for (int i=0;i<numL;i++)
 			if (locUsed[i+numV]) usedInventory += s->location[i].inventory;
-
 
 		if (usedInventory >= data->totalDemand && remainDem != 0){// the most key method to guarantee the feasible
 			std::vector<int>location;
@@ -420,9 +242,7 @@ void initial_sol::remedyTheSolution(std::vector<int> location){// to use the inf
 	}
 	//repair the infeasible solution
 	s->evaluationDis();
-//	s->outputSolution();
 	repair->repairForInitialSolution(s);
-//	s->outputSolution();
 }
 void initial_sol::initial_solution(Individual *s, int rankPop){
 	if (data->hardTimeWindows) {
@@ -431,18 +251,8 @@ void initial_sol::initial_solution(Individual *s, int rankPop){
 	}
 	this->s=s;
 	this->rankPop = rankPop;
-//	if ((int)data->compactLocConfigure.size() == 0)
-//	greedyInsert();
-//	else
 	newGreedyInsert();
 
-/*	for (int i=0;i<numL;i++){
-		if (s->location[i].used){
-			std::cout<<i<<" ";
-		}
-	}
-	std::cout<<std::endl;
-*/
 	s->evaluationDis();
 	s->isRight();
 }

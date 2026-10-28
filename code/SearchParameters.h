@@ -244,7 +244,7 @@ struct SearchParameters {
         if (p.experimentArm != "Full" && p.experimentArm != "NoSP" &&
             p.experimentArm != "OneWaySP" && p.experimentArm != "NoSPInstall" &&
             p.experimentArm != "GlobalOnly")
-            throw std::invalid_argument("MASP_ARM must name one of the four frozen study arms");
+            throw std::invalid_argument("MASP_ARM must be Full, NoSP, OneWaySP, NoSPInstall, or GlobalOnly");
         if (const char* events = std::getenv("MASP_EVENT_PATH")) {
             if (!*events) throw std::invalid_argument("MASP_EVENT_PATH cannot be empty");
             p.experimentEventsPath = events;

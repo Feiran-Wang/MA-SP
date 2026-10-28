@@ -37,23 +37,17 @@ public:
 	void loadInventory();
 	void loadSolution();
 
-	void finalCostCalibration();
-
-	//
-	void newRepair();
-
 
 private:
+	Node* emptyRouteStart(int depot) const;
 	int numV;
 	int numL;
 	int numC;
 	read_data *data;
 	Individual *s;
-	int sizeSubPop;
 	double penaltyDepot;
 	double penaltyVeh;
 	//
-	int *checkCus;
 	int **tabuTable;
 	int iteration;
 	Node *nodeU;
@@ -65,14 +59,12 @@ private:
 	Route *routeV;
 	int nodeUPrevIndex, nodeUIndex, nodeXIndex, nodeXNextIndex ;
 	int nodeVPrevIndex, nodeVIndex, nodeYIndex, nodeYNextIndex ;
-	int loadU, loadX, loadV, loadY;
 	double min_delta, delta;
 	int whichMove;
 	//
 	int tabu_length = 30;
 
 
-	popManager * popman;
 };
 
 #endif /* REPAIRPROCEDURE_H_ */

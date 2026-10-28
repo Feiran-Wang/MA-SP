@@ -23,6 +23,12 @@
 
 set(GUROBI_ROOT "" CACHE PATH "Gurobi installation prefix or platform directory")
 
+# A changed SDK root must not reuse libraries cached from another installation.
+unset(Gurobi_CXX_LIBRARY CACHE)
+unset(Gurobi_CXX_LIBRARY)
+unset(Gurobi_C_LIBRARY CACHE)
+unset(Gurobi_C_LIBRARY)
+
 set(_Gurobi_root_hints)
 if(GUROBI_ROOT)
   list(APPEND _Gurobi_root_hints "${GUROBI_ROOT}")

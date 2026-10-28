@@ -8,8 +8,7 @@
 
 #include "RepairProcedure.h"
 
-RepairProcedure::RepairProcedure(read_data *data, popManager * popman) {
-	// TODO Auto-generated constructor stub
+RepairProcedure::RepairProcedure(read_data *data, popManager *) {
 	this->data = data;
 	this->numV = data->numV;
 	this->numL = data->numL;
@@ -17,16 +16,16 @@ RepairProcedure::RepairProcedure(read_data *data, popManager * popman) {
 	tabuTable = new int *[data->maxVnum];
 	for (int i=0;i<data->maxVnum; i++)
 		tabuTable[i] = new int [numC];
-	checkCus = new int [numV];
 
-	this->popman = popman;
 }
 RepairProcedure::~RepairProcedure(){
-	// TODO Auto-generated destructor stub
 	for (int i=0;i<data->maxVnum;i++)
 		delete [] tabuTable[i];
 	delete [] tabuTable;
-	delete [] checkCus;
+}
+Node* RepairProcedure::emptyRouteStart(int depot) const {
+	if (depot < 0 || depot >= numL || s->location[depot].emptyRoutes.empty()) return nullptr;
+	return s->route[*s->location[depot].emptyRoutes.begin()].depot;
 }
 bool RepairProcedure::checkInfeasible(){
 	for (int i=0;i<numL;i++){
@@ -83,6 +82,7 @@ void RepairProcedure::localRepair(){
 				p = s->location[i].depots[j].next;
 				for (int k =0; k<(int)data->customerToLoc[p->cour].size(); k++){
 					if (data->customerToLoc[p->cour][k] == i+numV)continue;
+					if (!emptyRouteStart(data->customerToLoc[p->cour][k] - numV)) continue;
 					delta = data->D[p->cour][data->customerToLoc[p->cour][k]] + data->D[s->location[i].endDepots[j].pre->cour][data->customerToLoc[p->cour][k]]
 							- data->D[p->pre->cour][p->cour] - data->D[s->location[i].endDepots[j].pre->cour][p->pre->cour];
 					delta +=  penaltyLocationFunction(p,data->customerToLoc[p->cour][k])
@@ -98,6 +98,7 @@ void RepairProcedure::localRepair(){
 				while (! p->isDepot){
 					for (int k =0; k<(int)data->customerToLoc[p->cour].size(); k++){
 						if (data->customerToLoc[p->cour][k] == i+numV)continue;
+						if (!emptyRouteStart(data->customerToLoc[p->cour][k] - numV)) continue;
 						delta = data->D[p->cour][data->customerToLoc[p->cour][k]] + data->D[s->location[i].endDepots[j].pre->cour][data->customerToLoc[p->cour][k]]
 								- data->D[p->pre->cour][p->cour] - data->D[s->location[i].endDepots[j].pre->cour][p->pre->cour];
 						delta += penaltyLocationFunction(p,data->customerToLoc[p->cour][k])
@@ -117,7 +118,7 @@ void RepairProcedure::localRepair(){
 			whichLoc = whichLoc - numV;
 			if (nodeU->pre->cour >= numV){// is the depot;
 				routeU = nodeU->route;
-				routeV = &s->route[*s->location[whichLoc].emptyRoutes.begin()];
+				routeV = emptyRouteStart(whichLoc)->route;
 				Node *end = nodeU->route->endDepot->pre;
 				nodeU->route->depot->next = nodeU->route->endDepot;
 				nodeU->route->endDepot->pre = nodeU->route->depot;
@@ -134,7 +135,7 @@ void RepairProcedure::localRepair(){
 			}
 			else{
 				routeU = nodeU->route;
-				routeV = &s->route[*s->location[whichLoc].emptyRoutes.begin()];
+				routeV = emptyRouteStart(whichLoc)->route;
 				Node *begin = nodeU->route->depot->next;
 				Node *end = nodeU->route->endDepot->pre;
 				nodeU->route->depot->next = nodeU->route->endDepot;
@@ -173,6 +174,8 @@ void RepairProcedure::localRepair(){
 	int looppID = 0;
 	while (usedInventory < data->totalDemand){
 		min_delta = Max;
+		nodeUb = nullptr;
+		nodeVb = nullptr;
 		for (int i=0; i<numL;i++){
 			if (s->location[i].used && s->location[i].remainInven > s->location[i].inventory){
 				for (int j=0;j<s->location[i].maxVisit; j++){
@@ -180,8 +183,12 @@ void RepairProcedure::localRepair(){
 					p = s->location[i].depots[j].next;
 					while (! p->isDepot){
 						//
-						if (p->route->whichLocation->splitTime == 1 && p->route->nbClients == 1)continue;
+						if (p->route->whichLocation->splitTime == 1 && p->route->nbClients == 1) {
+							p = p->next;
+							continue;
+						}
 						for (int k =0;k < (int)data->customerToLoc[p->cour].size();k++){
+							if (s->location[data->customerToLoc[p->cour][k] - numV].maxVisit == 0) continue;
 							nodeV = &s->location[data->customerToLoc[p->cour][k] - numV].depots[0];
 						//	nodeV = s->route[*s->location[data->customerToLoc[p->cour][k] - numV].emptyRoutes.begin()].depot;
 
@@ -211,6 +218,7 @@ void RepairProcedure::localRepair(){
 			}
 			// carry out the operation'
 		}
+		if (!nodeUb || !nodeVb) return;
 		routeU = nodeUb->route;
 		routeV = nodeVb->route;
 		insertNode(nodeUb,nodeVb);
@@ -219,7 +227,8 @@ void RepairProcedure::localRepair(){
 		s->updateLocationInfor(routeU->whichLocation->cour);
 		s->updateRouteInfor(routeV->cour, -1);
 		s->updateLocationInfor(routeV->whichLocation->cour);
-		updateThePenalty(whichLoc-numV, routeU);
+		updateThePenalty(routeU->whichLocation->cour - numV, routeU);
+		updateThePenalty(routeV->whichLocation->cour - numV, routeV);
 		looppID ++;
 		if (looppID > 100) return;
 		//
@@ -281,7 +290,7 @@ void RepairProcedure::localRepair(){
 						}
 						// adding the new route.
 						if (!s->location[i].emptyRoutes.empty()){
-							nodeV = s->route[*s->location[i].emptyRoutes.begin()].depot;
+								nodeV = emptyRouteStart(i);
 							setLocalVariableRouteU();
 							setLocalVariableRouteV();
 							Relocate_one();
@@ -311,65 +320,8 @@ void RepairProcedure::localRepair(){
 			loopID ++;
 		}
 	}
-	/////////////////////////////the finall remedy
-	for (int i=0;i<data->maxVnum;i++)
-		for (int j=0;j<numC; j++)
-			tabuTable[i][j] = 0;
-	iteration = 0;
-	while(1){
-		min_delta = Max;
-		for (int i=0;i<numL; i++){// to adjust some customers
-			for (int j=0; j<s->location[i].maxVisit; j++){
-				if (s->location[i].penalty > 0 || s->location[i].depots[j].route->penalty > 0){
-					nodeU = s->location[i].depots[j].next;
-					while(!nodeU->isDepot){
-						for (int posV = 0; posV<numV;posV++){
-							if (s->client[posV].route == nodeU->route)continue;
-							if (s->client[posV].route->whichLocation->penalty || s->client[posV].route->penalty > 0)continue;
-							nodeV = &s->client[posV];
-							setLocalVariableRouteU();
-							setLocalVariableRouteV();
-							//
-							Relocate_one();
-							Relocate_four();
-							Relocate_nine();
-							Relocate_ten();
-							// Trying moves that insert nodeU directly after the depot
-							if (nodeV->pre->isDepot){
-								nodeV = nodeV->pre;
-								setLocalVariableRouteV();
-								Relocate_one();
-								Relocate_nine();
-								Relocate_ten();
-							}
-						}
-						// adding the new route.
-						if (!s->location[i].emptyRoutes.empty()){
-							nodeV = s->route[*s->location[i].emptyRoutes.begin()].depot;
-							setLocalVariableRouteU();
-							setLocalVariableRouteV();
-							Relocate_one();
-							Relocate_nine();
-							Relocate_ten();
-						}
-						//
-						nodeU = nodeU->next;
-					}
-				}
-			}
-		}
-		if (min_delta == Max )
-			return;
-		updateTheMove();
-		iteration++;
-		if (iteration > loopID*numV/10. && (s->inventory < data->totalDemand || s->inventoryVeh < data->totalDemand)){
-			penaltyVeh = penaltyVeh*10;
-			penaltyDepot = penaltyDepot*10;
-			updateThePenalty(-1, NULL);
-			loopID ++;
-		}
-	}
 }
+
 void RepairProcedure::loadInventory(){
 	s->inventory = 0;
 	int numRoute = 0;
@@ -381,12 +333,6 @@ void RepairProcedure::loadInventory(){
 		s->inventoryVeh = numRoute * data->vehCap;
 	}
 }
-//void RepairProcedure::createNewRoute(){
-
-
-
-
-//}
 void RepairProcedure::updateTheMove(){
 	nodeU=nodeUb;
 	nodeV=nodeVb;
@@ -689,8 +635,6 @@ void RepairProcedure::setLocalVariableRouteU(){
 	nodeUIndex = nodeU->cour;
 	nodeUPrevIndex = nodeU->pre->cour;
 	nodeXIndex = nodeX->cour;
-	loadU=nodeU->dem;
-	loadX=nodeX->dem;
 }
 void RepairProcedure::setLocalVariableRouteV(){
 	routeV=nodeV->route;
@@ -699,8 +643,6 @@ void RepairProcedure::setLocalVariableRouteV(){
 	nodeVIndex=nodeV->cour;
 	nodeVPrevIndex=nodeV->pre->cour;
 	nodeYIndex=nodeY->cour;
-	loadV=nodeV->dem;
-	loadY=nodeY->dem;
 }
 void RepairProcedure::loadSolution(){
 	for (int i=0; i<numL;i++){
@@ -714,74 +656,6 @@ void RepairProcedure::loadSolution(){
 /***************************************************************************************************************/
 /***************************************************************************************************************/
 /***************************************************************************************************************/
-void RepairProcedure::newRepair(){
-	if(checkInfeasible())return;// check the in-feasibility
-	int loopID = 1;
-	updateThePenalty(-1, NULL);
-	for (int i=0;i<data->maxVnum;i++)
-		for (int j=0;j<numC; j++)
-			tabuTable[i][j] = 0;
-	iteration = 0;
-	while(1){
-		min_delta = Max;
-		for (int i=0;i<numL; i++){// to adjust some customers
-			for (int j=0; j<s->location[i].maxVisit; j++){
-				if (s->location[i].penalty > 0 || s->location[i].depots[j].route->penalty > 0){
-					nodeU = s->location[i].depots[j].next;
-					while(!nodeU->isDepot){
-						for (int posV = 0; posV<(int)data->edgeNode[nodeU->cour].size(); posV++){
-							if (data->edgeNode[nodeU->cour][posV] < numV){
-								nodeV = &s->client[data->edgeNode[nodeU->cour][posV]];
-								if (s->location[i].penalty > 0 && s->location[i].depots[j].route->penalty <= 0)
-									if (nodeV->route->whichLocation == nodeU->route->whichLocation)continue;
-
-								if (nodeV->route == nodeU->route)continue;
-								setLocalVariableRouteU();
-								setLocalVariableRouteV();
-								//
-								Relocate_one();
-								Relocate_four();
-								Relocate_nine();
-								Relocate_ten();
-								// Trying moves that insert nodeU directly after the depot
-								if (nodeV->pre->isDepot){
-									nodeV = nodeV->pre;
-									setLocalVariableRouteV();
-									Relocate_one();
-									Relocate_nine();
-									Relocate_ten();
-								}
-							}
-							else{
-								nodeV = s->route[*s->location[data->edgeNode[nodeU->cour][posV]-numV].emptyRoutes.begin()].depot;
-								if (s->location[i].penalty > 0 && s->location[i].depots[j].route->penalty <= 0)
-									if (nodeV->route->whichLocation == nodeU->route->whichLocation)continue;
-
-								setLocalVariableRouteU();
-								setLocalVariableRouteV();
-								Relocate_one();
-								Relocate_nine();
-								Relocate_ten();
-							}
-						}
-			//			createNewRoute();
-						nodeU = nodeU->next;
-					}
-				}
-			}
-		}
-		if (min_delta == Max )
-			return;
-		updateTheMove();
-		iteration++;
-		if (iteration > loopID*numV/10. && (s->inventory < data->totalDemand || s->inventoryVeh < data->totalDemand)){
-			penaltyVeh = penaltyVeh*10;
-			penaltyDepot = penaltyDepot*10;
-			updateThePenalty(-1, NULL);
-			loopID ++;
-		}
-	}
-}
 void RepairProcedure::repairForInitialSolution(Individual *s){
 	this->s = s;
 	loadSolution();
@@ -822,7 +696,8 @@ void RepairProcedure::repairForInitialSolution(Individual *s){
 							}
 						}
 						else{
-							nodeV = s->route[*s->location[data->edgeNode[nodeU->cour][posV]-numV].emptyRoutes.begin()].depot;
+							nodeV = emptyRouteStart(data->edgeNode[nodeU->cour][posV] - numV);
+							if (!nodeV) continue;
 							if (s->location[i].penalty > 0 && s->location[i].depots[j].route->penalty <= 0)
 								if (nodeV->route->whichLocation == nodeU->route->whichLocation) continue;
 							setLocalVariableRouteU();
@@ -885,7 +760,8 @@ void RepairProcedure::repairForInitialSolution(Individual *s){
 							}
 						}
 						else{
-							nodeV = s->route[*nodeU->route->whichLocation->emptyRoutes.begin()].depot;
+							nodeV = emptyRouteStart(nodeU->route->whichLocation->cour - numV);
+							if (!nodeV) continue;
 							if (s->location[i].penalty > 0 && s->location[i].depots[j].route->penalty <= 0)
 								if (nodeV->route->whichLocation == nodeU->route->whichLocation) continue;
 							setLocalVariableRouteU();
@@ -898,12 +774,14 @@ void RepairProcedure::repairForInitialSolution(Individual *s){
 
 					}
 					// adding a new route
-					nodeV = s->route[*nodeU->route->whichLocation->emptyRoutes.begin()].depot;
-					setLocalVariableRouteU();
-					setLocalVariableRouteV();
-					Relocate_one();
-					Relocate_nine();
-					Relocate_ten();
+					nodeV = emptyRouteStart(nodeU->route->whichLocation->cour - numV);
+					if (nodeV) {
+						setLocalVariableRouteU();
+						setLocalVariableRouteV();
+						Relocate_one();
+						Relocate_nine();
+						Relocate_ten();
+					}
 
 
 					nodeU = nodeU->next;
@@ -918,7 +796,8 @@ void RepairProcedure::repairForInitialSolution(Individual *s){
 					nodeU = s->location[i].depots[j].next;
 					while(!nodeU->isDepot){
 						for (int posV = 0; posV< numL; posV++){
-							nodeV = s->route[*s->location[posV].emptyRoutes.begin()].depot;
+							nodeV = emptyRouteStart(posV);
+							if (!nodeV) continue;
 							if (s->location[i].penalty > 0 && s->location[i].depots[j].route->penalty <= 0)
 								if (nodeV->route->whichLocation == nodeU->route->whichLocation) continue;
 							setLocalVariableRouteU();
@@ -958,7 +837,6 @@ void RepairProcedure::repairCapacityConstraint(Individual *subPop,double penalty
 
 	localRepair();
 
-//	newRepair();
 	s->decideFeasible();
 	if (!s->isFeasible)return;
 

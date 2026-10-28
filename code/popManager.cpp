@@ -8,6 +8,21 @@
 #include "StudyEvents.h"
 #include <cmath>
 
+namespace {
+bool sameCustomerAdjacency(const Individual& left, const Individual& right,
+                           int customers, bool directed) {
+    for (int customer = 0; customer < customers; ++customer) {
+        const Node& a = left.client[customer];
+        const Node& b = right.client[customer];
+        if (!a.pre || !a.next || !b.pre || !b.next) return false;
+        const bool sameDirection = a.pre->cour == b.pre->cour && a.next->cour == b.next->cour;
+        const bool reversed = a.pre->cour == b.next->cour && a.next->cour == b.pre->cour;
+        if (!sameDirection && (directed || !reversed)) return false;
+    }
+    return true;
+}
+}
+
 std::string popManager::studyPopulationId(int slot) {
     if (!study || slot < 0) return "";
     if (studyPopulationAtSlot[slot] < 0) replaceStudyPopulation(slot, "initialization_or_refill");
@@ -48,7 +63,6 @@ void popManager::finishStudyPopulations() {
 }
 
 popManager::popManager(read_data *data) {
-	// TODO Auto-generated constructor stub
 	this->data=data;
 	this->numV = data->numV;
 	this->numL = data->numL;
@@ -60,23 +74,16 @@ popManager::popManager(read_data *data) {
 }
 
 popManager::~popManager() {
-	// TODO Auto-generated destructor stub
-	for (int i = 0; i < (int)feasibleSubpopulation.size(); i++)
-		delete feasibleSubpopulation[i];
 	delete [] order;
-	for (int i=0;i<data->numLocConfiguration+1;i++){
-		for (Individual * indiv : popula[i]) delete indiv;
-		popula[i].clear();
+	for (auto& population : popula){
+		for (Individual * indiv : population) delete indiv;
+		population.clear();
 	}
 }
 void popManager:: copyAllData(Individual * s,Individual *ss){
-	if (data->hardTimeWindows) {
-		if (s == ss) return;
-		s->initilization();
-	}
+	if (s == ss) return;
+	s->initilization();
 	Node *nodeU;
-	s->saturatLoc.clear();
-	s->saturatRoute.clear();
 	/*initialize solution s*/
 	for (int i=0;i<numV; i++){
 		s->client[i].pre = NULL;
@@ -90,9 +97,7 @@ void popManager:: copyAllData(Individual * s,Individual *ss){
 			s->location[i].endDepots[j].pre = &s->location[i].depots[j];
 			s->updateRouteInfor(s->location[i].depots[j].route->cour, -1);
 		}
-	//	s->updateLocationInfor(i + numV);
 		s->location[i].used=false;
-		if (!data->hardTimeWindows) s->location[i].emptyRoutes.clear();
 	}
 	//
 	int count;
@@ -147,25 +152,11 @@ int popManager::addIndividual(Individual *indiv, int rankPop, bool isInitial, Ro
         for (int p = 0; p < data->numLocConfiguration; ++p)
             if (actual == data->compactLocConfigure[p]) { rankPop = p; break; }
     }
-	if (isInitial){
-		std::vector<int>depot;
-		if (rankPop > -1 && rankPop < data->numLocConfiguration){
-			for (int i=0;i<numL;i++){
-				if (indiv->location[i].used)
-					depot.push_back(i+numV);
-			}
-			auto it = data->compactLocConfigure[rankPop].begin();
-			if ((int)depot.size() == (int)data->compactLocConfigure[rankPop].size()){
-				for (int i=0;i<(int)depot.size();i++){
-					if (*it != depot[i]){
-						rankPop = data->numLocConfiguration;
-					//	addInElitePop(indiv);
-						break;
-					}
-					it ++;
-				}
-			}
-		}
+	if (isInitial && rankPop >= 0 && rankPop < data->numLocConfiguration) {
+		std::set<int> actual;
+		for (int depot = 0; depot < numL; ++depot)
+			if (indiv->location[depot].used) actual.insert(depot + numV);
+		if (actual != data->compactLocConfigure[rankPop]) rankPop = data->numLocConfiguration;
 	}
 	//////////////////////////////////////////////////////////////////////////////////////////////////////////
 	//////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -414,38 +405,6 @@ int popManager::addIndividual(Individual *indiv, int rankPop, bool isInitial, Ro
 		return -1;
 }
 
-void popManager::addInElitePop(Individual *indiv){
-/*	//update the e-lite population
-	SubPopulation & epop = eliteSubpopulation;
-	for (Individual * myIndividual : epop)// no clone individuals
-		if (myIndividual->fit + Min > indiv->fit && myIndividual->fit - Min < indiv->fit)
-			return;
-	if ((int)epop.size() < data->popMax){
-		Individual * myIndiv = new Individual();
-		myIndiv->define(data);
-		copyAllData(myIndiv, indiv);
-		int place = (int)epop.size();
-		while (place > 0 && epop[place - 1]->fit > indiv->fit - Min)
-			place--;
-		epop.emplace(epop.begin() + place, myIndiv);
-	}
-	else{
-		int place = (int)epop.size();
-		while (place > 0 && epop[place - 1]->fit > indiv->fit - Min)
-			place--;
-		if (place < (int)epop.size()){
-			Individual * myIndiv = new Individual();
-			myIndiv->define(data);
-			copyAllData(myIndiv, indiv);
-			epop.emplace(epop.begin() + place, myIndiv);
-			int worst = (int)epop.size()-1;
-			Individual * worstIndividual = epop[worst];
-			epop.erase(epop.begin() + worst); // Removing the individual from the population
-			delete worstIndividual;
-		}
-	}
-	*/
-}
 Individual * popManager::selectionParentSolution(Individual *exist, int rankPop){
 	SubPopulation & subpop = popula[rankPop];
     if (study && !subpop.empty()) {
@@ -463,9 +422,8 @@ Individual * popManager::selectionParentSolution(Individual *exist, int rankPop)
     }
 	updateBiasedFitnesses(subpop);
 	// With two distinct tournament entrants, a strictly better excluded parent
-	// wins every draw. Return the only admissible mate in that degenerate case;
 	// all terminating tournament paths retain their original random draws.
-	if (data->experimentMode && subpop.size() == 2) {
+	if (subpop.size() == 2) {
 		if (exist == subpop[0] && subpop[0]->biasedFit < subpop[1]->biasedFit)
 			return subpop[1];
 		if (exist == subpop[1] && subpop[1]->biasedFit < subpop[0]->biasedFit)
@@ -483,7 +441,6 @@ Individual * popManager::selectionParentSolution(Individual *exist, int rankPop)
 		rand1 = RandomInt(0, max_idx); // 使用 basic.h 中的随机函数
 		rand2 = RandomInt(0, max_idx);
 		while (rand1 == rand2) rand2 = RandomInt(0, max_idx);
-		//if (subpop[rand1]->biasedFit < subpop[rand2]->biasedFit)
 		if (subpop[rand1]->biasedFit < subpop[rand2]->biasedFit)
 			target = subpop[rand1];
 		else
@@ -504,24 +461,6 @@ void popManager::reStart(){
 	data->nbIterNonImpro=0;
 	bestIndivRestart->fit = Max;
 }
-double popManager::averagePop(){
-	double fit=0;
-	for (Individual * indiv : feasibleSubpopulation)
-		fit += indiv->fit;
-	fit = fit/(double)feasibleSubpopulation.size();
-	return fit;
-}
-double popManager::usedDepots(){
-	std::set<int>locations;
-	for (Individual * indiv : feasibleSubpopulation){
-		for (int i=0;i<numL;i++){
-			if (indiv->location[i].used)
-				locations.insert(i);
-		}
-	}
-	int ss = locations.size();
-	return(double(ss) / double(numL));
-}
 void popManager::removeWorstBiasedFitness(SubPopulation & pop){
 	updateBiasedFitnesses(pop);
 	if (pop.size() <= 1) throw std::string("Eliminating the best individual: this should not occur in the algorithm");
@@ -532,7 +471,15 @@ void popManager::removeWorstBiasedFitness(SubPopulation & pop){
 	double worstIndividualBiasedFitness = -1.e30;
 	for (int i = 0; i < (int)pop.size(); i++)
 	{
-		bool isClone = (pop[i]->averageBrokenPairsDistanceClosest(1) < Min); // A distance equal to 0 indicates that a clone exists
+		// The retained weighted score is negative even for distinct solutions.
+		// Clone priority depends on topology, independently of that ranking score.
+		bool isClone = false;
+		for (const Individual* other : pop) {
+			if (other != pop[i] && sameCustomerAdjacency(*pop[i], *other, numV, data->hardTimeWindows)) {
+				isClone = true;
+				break;
+			}
+		}
 		if ((isClone && !isWorstIndividualClone) || (isClone == isWorstIndividualClone && pop[i]->biasedFit > worstIndividualBiasedFitness))
 		{
 			worstIndividualBiasedFitness = pop[i]->biasedFit;
@@ -569,33 +516,6 @@ void popManager::updateBiasedFitnesses(SubPopulation & pop){
 		}
 	}
 }
-void popManager::removeEmptySubPop(){
-	for (int i = popula.size()-2;i >= 0; i--){
-		if (popula[i].empty()){
-			popula.erase(popula.begin() + i);
-			data->numLocConfiguration--;
-		}
-	}
-	for (int i=0;i<data->dimension;i++){
-		data->dimTabu1 [i] = -1;
-		data->dimTabu2 [i] = -1;
-	}
-	long long int var, var1, var2;;int seed;
-	for (int i=0;i<data->numLocConfiguration;i++){
-		if ((int)popula[i].size() > 0){
-			var = 0;var1 = 0;
-			auto it = data->compactLocConfigure[i].begin();
-			for (;it != data->compactLocConfigure[i].end(); it++){
-				seed = *it - data->numV;
-				var2 = pow(2, seed);
-				var += var2;
-				var1 += var2 + 9527 * seed;
-			}
-			data->dimTabu1[var % data->dimension] = i;
-			data->dimTabu2[var1 % data->dimension] = i;
-		}
-	}
-}
 void popManager::reduceHalfSubPop(){
 	if ((int)popula.size() < 3)return;
 	std::vector<std::pair<double, int>>averageCost;
@@ -621,10 +541,13 @@ void popManager::reduceHalfSubPop(){
 	std::sort(remove.begin(),remove.end());
 	std::reverse(remove.begin(),remove.end());
 	for (int i=0;i<(int)remove.size();i++){
+		if (study) closeStudyPopulation(remove[i]);
 		SubPopulation & sub = popula[remove[i]];
 		for (Individual * indiv : sub) delete indiv;
 		popula.erase(popula.begin()+remove[i]);
 		data->compactLocConfigure.erase(data->compactLocConfigure.begin() + remove[i]);
+		popCreationIteration.erase(popCreationIteration.begin() + remove[i]);
+		studyPopulationAtSlot.erase(studyPopulationAtSlot.begin() + remove[i]);
 	}
 	data->numLocConfiguration = data->numLocConfiguration - remove.size();
 
@@ -648,33 +571,6 @@ void popManager::reduceHalfSubPop(){
 		}
 	}
 
-
-}
-
-int popManager::getWorstResidentIndex() {
-    int worstIdx = 0;
-    double worstAvgFit = -1.0;
-
-    // 客观事实防线 1：只遍历常驻种群 (0 到 data->numLocConfiguration - 1)
-    // 绝对不能触碰索引为 data->numLocConfiguration 的游离种群
-    for (int i = 0; i < data->numLocConfiguration; ++i) {
-        if (popula[i].empty()) {
-            // 如果存在空种群，优先覆盖它，避免覆盖已有数据的种群
-            return i;
-        }
-
-        double sumFit = 0.0;
-        for (Individual* ind : popula[i]) {
-            sumFit += ind->fit;
-        }
-        double avgFit = sumFit / popula[i].size();
-
-        if (avgFit > worstAvgFit) {
-            worstAvgFit = avgFit;
-            worstIdx = i;
-        }
-    }
-    return worstIdx;
 }
 
 int popManager::injectSPSolution(Individual* spIndiv, RoutePool* pool) { // <--- 关键修正：这里必须是 int
@@ -762,7 +658,9 @@ int popManager::injectSPSolution(Individual* spIndiv, RoutePool* pool) { // <---
             spIndiv->indivsPerProximity.insert({ myDistance, existingIndiv });
         }
 
-        popula[matchIndex].push_back(spIndiv);
+        auto place = popula[matchIndex].begin();
+        while (place != popula[matchIndex].end() && (*place)->fit <= spIndiv->fit - Min) ++place;
+        popula[matchIndex].insert(place, spIndiv);
         lastSPDecision = "matched_inserted";
         ++spMatchingInjections;
 

@@ -25,13 +25,11 @@ crossover::crossover(read_data * data,  popManager * popman) {
 		ABcycles[i].sque=new Node0 [numC*4];
 	auxArray1=new int [numC];
 	auxArray2=new int [numC];
-	auxArray3=new Node6 [numC];
 
 	whichCycles = std::vector<std::set <int > >(numC);
 	commconCycles = std::vector<std::set <int > >(numC);
 
 	eSets=new Node5 [numC/2];
-	existCity=new int [numC];
 	//
 	gStart = new Node [numC];
 	gEnd = new Node [numC];
@@ -59,7 +57,6 @@ crossover::crossover(read_data * data,  popManager * popman) {
 	auxA2 = new bool [numV];
 }
 crossover::~crossover() {
-	// TODO Auto-generated destructor stub
 	for (int i=0;i<numC;i++){
 		delete [] AcapB[i].edgeF;
 		delete [] AcapB[i].edgeM;
@@ -70,9 +67,7 @@ crossover::~crossover() {
 	delete [] ABcycles;
 	delete [] auxArray1;
 	delete [] auxArray2;
-	delete [] auxArray3;
 	delete [] eSets;
-	delete [] existCity;
 	//
 	delete [] gStart;
 	delete [] gEnd;
@@ -186,18 +181,6 @@ void crossover::loadFaCapMa(){
 		}
 	}
 	//output all edges
-//	if (data->iteration == Max){
-//		for (int i=0;i<numC;i++){
-//			if (AcapB[i].nbeF == 0 && AcapB[i].nbeM == 0)continue;
-//			std::cout<<i<<"  ";
-//			for (int j=0;j<AcapB[i].nbeF;j++)
-//				std::cout<<AcapB[i].edgeF[j].cour<<" ";
-//			std::cout<<"       ";
-//			for (int j=0;j<AcapB[i].nbeM;j++)
-//				std::cout<<AcapB[i].edgeM[j].cour<<" ";
-//			std::cout<<"       "<<std::endl;
-//		}
-//	}
 }
 void crossover::addNodeToABcycles(int &nb, Node0 &tem){
 	ABcycles[nb].sque[ABcycles[nb].nbCity].cour=tem.cour;
@@ -228,7 +211,6 @@ void crossover::extractABcycles(){
 		ABcycles[nbABcycles].nbCity=0;// the edge (x,y) comes from father, otherwise, it comes from mother solution
 		ori.cour = RandomInt(0, numAvaCity - 1);
 		ori.cour = auxArray2[ori.cour];
-		//father=false;
 		isF=0;isM=0;
 		for (int i=0;i<AcapB[ori.cour].nbeF;i++)
 			if (AcapB[ori.cour].edgeF[i].cour > -1){
@@ -334,39 +316,25 @@ void crossover::extractABcycles(){
 				if (nbABcycles == sizeSubPop)return;
 				break;
 			}
-/*			if (ori.cour == startCity.cour && count == 2 && AcapB[ori.cour].nbeF == 0 ){
-				whichCycles[startCity.cour].insert(nbABcycles);
-				nbABcycles++;
-				if (nbABcycles == sizeSubPop)return;
-				break;
-			}
-*/
+
 			count++;
 		}
 	}
-/*	if (data->iteration == 76281){
-		std::cout<<"Output the ABcycles"<<std::endl;
-		if (1){
-			for (int i = 0; i < nbABcycles; i++){
-				for (int j = 0; j < ABcycles[i].nbCity; j++){
-					std::cout<<ABcycles[i].sque[j].cour<<" ";
-				}
-				std::cout<<std::endl;
-			}
-		}
-	}
-*/
+
 }
 void crossover::generationEsets(){
-	for (int i=0;i<numC/2;i++) eSets[i].cycles.clear();// clear all eSets
+	for (int i=0;i<numC/2;i++) {
+		eSets[i].cycles.clear();
+		commconCycles[i].clear();
+	}
 
 	for (int i=0;i<numC/2;i++){
-		commconCycles[i].clear();
 		if (whichCycles[i].empty())continue;
 		std::set < int >::iterator k1 = whichCycles[i].begin();
 		if (whichCycles[i].size() != 1){
 			while (k1 != whichCycles[i].end()){
 				std::set < int >::iterator k2=k1;		k2++;
+				if (k2 == whichCycles[i].end()) break;
 				commconCycles[*k1].insert(*k2);
 				commconCycles[*k2].insert(*k1);
 				k1++;
@@ -436,9 +404,12 @@ void crossover::generationEsets(){
 	}
 	// strategy 3 partition some AB-cycles with common nodes
 	int nbCommonCycles=0;
+	std::vector<int> activeGroups;
 	for (int i=0; i<nbABcycles; i++)
-		if (!commconCycles[i].empty())
+		if (!commconCycles[i].empty()) {
+			activeGroups.push_back(i);
 			nbCommonCycles++;
+		}
 	actualNbCycles = nbCommonCycles;
 	reccord=0;
 	iiter=1;
@@ -457,20 +428,15 @@ void crossover::generationEsets(){
 		}
 		//////////////////////////////////////////////////////////////////
 		for (int ii=0;ii<bEta;ii++){
-			int jj=0;
 			for (int i=reccord;i<iiter*actualNbCycles/bEta;){
-				if (commconCycles[jj].empty()){
-					jj++;
-					continue;
-				}
-				std::set < int >::iterator k1 = commconCycles[i].begin();
-				while(k1 != commconCycles[i].end()){
+				const auto& group = commconCycles[activeGroups[i]];
+				std::set < int >::const_iterator k1 = group.begin();
+				while(k1 != group.end()){
 					eSets[nbeSets].cycles.insert(*k1);
 					k1++;
 				}
 				reccord++;
 				i++;
-				jj++;
 			}
 			nbeSets++;
 			iiter++;
@@ -612,7 +578,6 @@ void crossover::generationIntermediateSolutions(){
 							if (p1Before ==1 && p2Before ==1){
 								tem=&off->client[p2];
 								tem2=tem;
-								//while(tem2->next != NULL && tem2->next->cour != 0)
 								while(tem2->next != NULL)
 									tem2=tem2->next;
 								flipSubString(tem,tem2,false);
@@ -623,7 +588,6 @@ void crossover::generationIntermediateSolutions(){
 							if (p1Before == -1 && p2Before ==-1){
 								tem=&off->client[p2];
 								tem2=tem;
-								//while(tem2->pre != NULL && tem2->pre->cour != 0)
 								while(tem2->pre != NULL)
 									tem2=tem2->pre;
 								flipSubString(tem,tem2,true);
@@ -647,8 +611,6 @@ void crossover::generationIntermediateSolutions(){
 		updateTheLocation();
 		eliminateSubtours();/*    STEP 5*/
 		checkTheSolution();
-//		if (data->iteration == 30)
-//		off->outputSolution();
 	}
 }
 void crossover::checkTheSolution(){
@@ -1145,26 +1107,12 @@ void crossover::eliminateSubtours(){
 		off->updateLocationInfor(nodeV->route->whichLocation->cour);
 	}
 }
-void crossover::adjustSolutions(){// to adjust some locations after crossover.
-	for (int i=0;i<nbeSets;i++){
-		off=subPop+i;
-
-
-
-
-	}
-}
 bool crossover::gEAX(Individual *fa, Individual *ma, Individual *subPop, int &numSubPop){
-	if (data->hardTimeWindows) numSubPop = 0;
+	numSubPop = 0;
 	this->fa=fa;
 	this->ma=ma;
 	this->subPop=subPop;
 	//
-//	if (data->iteration == 76281){
-//		fa->outputSolution();
-//		ma->outputSolution();
-//	}
-//	ma->evaluationDis();
 	loadFaCapMa();/*                                         STEP 1*/
 	extractABcycles();/*                                       STEP 2*/
 	if (nbABcycles == sizeSubPop)
@@ -1172,7 +1120,6 @@ bool crossover::gEAX(Individual *fa, Individual *ma, Individual *subPop, int &nu
 	generationEsets();/*                                        STEP 3*/
 	generationIntermediateSolutions();/*                         STEPs 4 & 5*/
 	//
-//	adjustSolutions();
 	//
 	numSubPop=nbeSets;//return the number of offspring solutions
 	return true;

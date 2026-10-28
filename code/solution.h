@@ -16,8 +16,8 @@ public:
 	solution(read_data * data, crossover *cross, initial_sol *initialSol,LS *ls,  popManager *popman, RepairProcedure *repair,mutation *mutationOperator);
 	virtual ~solution();
 	void main_loop();
-	RoutePool* routePool;
-    SPSolver* spSolver;
+	RoutePool* routePool = nullptr;
+    SPSolver* spSolver = nullptr;
 
 	int sp_total_triggers = 0;    // SP 条件触发次数
     int sp_found_solutions = 0;   // Gurobi 成功找到解的次数
@@ -26,7 +26,6 @@ public:
 private:
 	StudyEvents* study = nullptr;
 	Individual* reportedBest = nullptr;
-	RepairProcedure* sideRepair = nullptr;
 	LS* sideLS = nullptr;
 	std::mt19937 sideRng;
 	bool noFeasibleEnd = false;
@@ -54,11 +53,11 @@ private:
 	RepairProcedure *repair;
 	mutation *mutationOperator;
 	///////////////////////////////////////////////////////////////////////////
-	Individual * global;
-	Individual * loc_best;
-	Individual * temIndiv;// needs to be
-	Individual * bestIndivRestart;
-	Individual * subPop;//used to save offspring solutions                                              the size cannot exceed 100.
+	Individual * global = nullptr;
+	Individual * loc_best = nullptr;
+	Individual * temIndiv = nullptr;// needs to be
+	Individual * bestIndivRestart = nullptr;
+	Individual * subPop = nullptr;//used to save offspring solutions                                              the size cannot exceed 100.
 	//
 	Individual * fa=NULL;
 	Individual * ma=NULL;

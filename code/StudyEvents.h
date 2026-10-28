@@ -4,7 +4,6 @@
 #include "Individual.h"
 #include <cmath>
 #include <cstdlib>
-#include <cstdio>
 #include <limits>
 #include <map>
 #include <stdexcept>
@@ -91,8 +90,7 @@ public:
         result << ']';
         return result.str();
     }
-    // Routes are included so every retained improvement, including the first
-    // optimality claim, can be independently reconstructed by the coordinator.
+    // Retained improvements can be reconstructed from the event log.
     bool observe(const std::string& stream, Individual* indiv, const std::string& origin) {
         if (!data->experimentMode || !indiv->isFeasible) return false;
         const auto existing = best.find(stream);
@@ -130,14 +128,6 @@ public:
         }
         fields << ']';
         event("incumbent", fields.str());
-        if (stream == "reported_best" && data->isOptimal && indiv->fit == data->bestDis) {
-            const auto slash = data->pathSolution.find_last_of("/\\");
-            const std::string prefix = slash == std::string::npos ? "" : data->pathSolution.substr(0, slash + 1);
-            const std::string witness = prefix + "optimum_candidate.txt";
-            indiv->writeStudyWitness(witness + ".tmp");
-            if (std::rename((witness + ".tmp").c_str(), witness.c_str()) != 0)
-                throw std::runtime_error("Cannot publish independent optimum-validation candidate");
-        }
         return true;
     }
 };

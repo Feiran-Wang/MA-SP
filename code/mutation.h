@@ -17,13 +17,9 @@ public:
 private:
 	Individual *s;
 	void shawRemoval();
-	void distanceRemove();
 	double compute(bool istrue, double value);
 	void insertNode(Node *U, Node *V);
 	//
-	void locationRemove();
-
-
 
 	read_data *data;
 	int numV;

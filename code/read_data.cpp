@@ -1,32 +1,26 @@
-/*
- * readdata.cpp
- *
- *  Created on: 17 Apr 2020
- *      Author: Peng
- */
+
 
 #include "read_data.h"
 #include "basic.h"
 #include "Individual.h"
+#include "JsonInput.h"
+#include <limits>
+#include <iterator>
 #include <stdexcept>
-#include <chrono>
-#include <thread>
 read_data::read_data() : SearchParameters(SearchParameters::setS(0)) {
 
 }
 read_data::~read_data() {
 	delete [] dimTabu1;
 	delete [] dimTabu2;
-	for (int i=0;i<numC;i++){
-		delete [] D[i];
-	}
+	if (D) for (int i=0;i<numC;i++) delete [] D[i];
 	delete [] D;
 	delete [] x;
 	delete [] y;
 	delete [] demCus;
 	delete [] invLoc;
 	delete [] openCostLoc;
-	for (int i=0;i<numL;i++) delete [] conflictLoc[i];
+	if (conflictLoc) for (int i=0;i<numL;i++) delete [] conflictLoc[i];
 	delete [] conflictLoc;
 }
 void read_data::define(){
@@ -38,6 +32,11 @@ void read_data::define(){
 	static_cast<SearchParameters&>(*this) = study
 		? (setSStudy ? SearchParameters::setSExperiment(numV) : SearchParameters::setFExperiment(numV, numL))
 		: hardTimeWindows ? SearchParameters::setF(numV, numL) : SearchParameters::setS(numV);
+    if (experimentMode && spTriggerFrequency > 0) {
+        spSchedule.clear();
+        for (long long at = spTriggerFrequency; at <= iterLimit; at += spTriggerFrequency)
+            spSchedule.push_back(static_cast<int>(at));
+    }
 	dimTabu1 = new int [dimension];
 	dimTabu2 = new int [dimension];
 	for (int i=0;i<dimension;i++){
@@ -45,7 +44,7 @@ void read_data::define(){
 		dimTabu2 [i] = -1;
 	}
 
-	D=new double *[numC];
+	D=new double *[numC]();
 	for (int i=0;i<numC;i++) D[i]=new double [numC];
 	x=new double [numC];
 	y=new double [numC];
@@ -57,7 +56,7 @@ void read_data::define(){
 	edgeLocVec = std::vector < std::vector < int > > (numL);
 	nearCity = std::vector< std::vector < int > >(numV);
 	nearCityLoca = std::vector< std::vector < int > >(numL);
-	conflictLoc = new int *[numL];
+	conflictLoc = new int *[numL]();
 	for(int i=0;i<numL;i++) conflictLoc[i] = new int [numL];
 	for (int i=0;i<numL;i++)
 		for (int j=0;j<numL;j++)
@@ -65,150 +64,127 @@ void read_data::define(){
 	locIncCus = std::vector<std::set<int>>(numL);
 }
 void read_data::read_fun(std::string pathInstance,std::string pathDepotCon,std::string pathSolution, double bestDis, int isOptimal, int timeLimit,int iterLimit){
-	/****imput information*******/
-	this->timeLimit=timeLimit;
-	this->iterLimit=iterLimit;
-	this->bestDis = bestDis;
-	this->isOptimal=isOptimal;
-	this->pathSolution=pathSolution;
-	this->pathDepotCon=pathDepotCon;
-	this->pathInstance=pathInstance;
-	this->isFleetLimited = isFleetLimited;
-	/*********************************************************/
-	std::ifstream inputFile(pathInstance);
-	inputFile.exceptions(std::ios::failbit | std::ios::badbit);
 
-	std::vector<std::string> temStr2=splitwithstr(pathInstance,'.');
-	int sss = (int)temStr2.size();
-//	std::cout<<temStr2[sss-1]<<std::endl;
-
-	if (inputFile.is_open()){
-		std::string instanceType;
-		std::string name1 = "dat";
-		std::string name2 = "json";
-		if (temStr2[sss-1] == "txt") {
-			readFarham(pathInstance);
-		}
-		else if (!temStr2[sss-1].compare(name1)){
-			inputFile >> numV;
-			inputFile >> numL;
-			numC = numV + numL;
-			define();
-			for (int i=numV; i<numC; i++){
-				inputFile >> x[i];
-				inputFile >> y[i];
-			}
-			for (int i=0; i< numV; i++){
-				inputFile >> x[i];
-				inputFile >> y[i];
-			}
-			inputFile >> vehCap;
-			for (int i=numV; i< numC; i++)
-				inputFile >> invLoc[i];
-			for (int i=0; i< numV; i++)
-				inputFile >> demCus[i];
-			for (int i=numV; i< numC; i++)
-				inputFile >> openCostLoc[i];
-			inputFile >> usingCostVeh;
-			inputFile >> realOrInteger;
-		}
-		else if (!temStr2[sss-1].compare(name2)){
-			numV = 0; numL = 0;
-			std::string var1;
-			inputFile >> var1;
-			while (var1 != "\"depots\":"){
-				inputFile >> var1;
-				if (var1 == "\"y\":"){
-					inputFile >> var1;
-					std::vector<std::string> temStr2=splitwithstr(var1,',');
-					numV++;
-				}
-			}
-			while (var1 != "\"name\":"){
-				inputFile >> var1;
-				if (var1 == "\"y\":"){
-					inputFile >> var1;
-					std::vector<std::string> temStr2=splitwithstr(var1,',');
-					numL++;
-				}
-			}
-			numC = numV + numL;
-			define();
-			inputFile.close();
-			//
-			std::ifstream inputFile(pathInstance);
-			inputFile.exceptions(std::ios::failbit | std::ios::badbit);
-			inputFile >> var1;
-			numV = 0;
-			numL = 0;
-			while (var1 != "\"depots\":"){
-				inputFile >> var1;
-				if (var1 == "\"demand\":"){
-					inputFile >> var1;
-					std::vector<std::string> temStr2=splitwithstr(var1,',');
-					demCus[numV] = int(std::stoi(temStr2[0]));
-				}
-				if (var1 == "\"x\":"){
-					inputFile >> var1;
-					std::vector<std::string> temStr2=splitwithstr(var1,',');
-					x[numV] = std::stoi(temStr2[0]);
-				}
-				if (var1 == "\"y\":"){
-					inputFile >> var1;
-					std::vector<std::string> temStr2=splitwithstr(var1,',');
-					y[numV] = std::stoi(temStr2[0]);
-					numV++;
-				}
-			}
-			while (var1 != "\"name\":"){
-				inputFile >> var1;
-				if (var1 == "\"capacity\":"){
-					inputFile >> var1;
-					std::vector<std::string> temStr2=splitwithstr(var1,',');
-					invLoc[numL+numV] = std::stoi(temStr2[0]);
-				}
-				if (var1 == "\"costs\":"){
-					inputFile >> var1;
-					std::vector<std::string> temStr2=splitwithstr(var1,',');
-					openCostLoc[numL+numV] = std::stoi(temStr2[0]);
-				}
-				if (var1 == "\"x\":"){
-					inputFile >> var1;
-					std::vector<std::string> temStr2=splitwithstr(var1,',');
-					x[numV+numL] = std::stoi(temStr2[0]);
-				}
-				if (var1 == "\"y\":"){
-					inputFile >> var1;
-					std::vector<std::string> temStr2=splitwithstr(var1,',');
-					y[numV+numL] = std::stoi(temStr2[0]);
-					numL++;
-				}
-			}
-			while(1){
-				inputFile >> var1;
-				if (var1 == "\"vehicle_capacity\":"){
-					inputFile >> var1;
-					std::vector<std::string> temStr2=splitwithstr(var1,',');
-					vehCap = std::stoi(temStr2[0]);
-				}
-				if (var1 == "\"vehicle_costs\":"){
-					inputFile >> var1;
-					std::vector<std::string> temStr2=splitwithstr(var1,',');
-					usingCostVeh = std::stoi(temStr2[0]);
-					break;
-				}
-			}
-		}
-	}
-	else {
-		std::cout<<"Wrong when opening file"<<std::endl;
-		exit(EXIT_FAILURE);}
-	// The JSON branch already closed this outer stream before reopening locally.
-	if (inputFile.is_open()) inputFile.close();
-	//
-	if (!hardTimeWindows) readDepotConfigurations();
-
-
+    this->timeLimit = timeLimit;
+    this->iterLimit = iterLimit;
+    this->bestDis = bestDis;
+    this->isOptimal = isOptimal;
+    this->pathSolution = pathSolution;
+    this->pathDepotCon = pathDepotCon;
+    this->pathInstance = pathInstance;
+    if (D) throw std::logic_error("read_data can load one instance only");
+    if (timeLimit <= 0 || iterLimit < 0 || !std::isfinite(bestDis) || bestDis < 0 ||
+        (isOptimal != 0 && isOptimal != 1) || (isOptimal && bestDis <= 0))
+        throw std::invalid_argument("invalid run limits or reference value");
+    const auto extensionAt = pathInstance.find_last_of('.');
+    const std::string extension = extensionAt == std::string::npos ? "" : pathInstance.substr(extensionAt + 1);
+    std::ifstream inputFile(pathInstance);
+    if (!inputFile) throw std::runtime_error("cannot open instance: " + pathInstance);
+    auto integer = [](double value, const std::string& field) {
+        if (!std::isfinite(value) || std::floor(value) != value ||
+            value < std::numeric_limits<int>::min() || value > std::numeric_limits<int>::max())
+            throw std::runtime_error(field + " must be a representable integer");
+        return static_cast<int>(value);
+    };
+    auto dimensions = [&]() {
+        if (numV <= 0 || numL <= 0 || numL > 62 || numV > std::numeric_limits<int>::max() - numL ||
+            numV > std::numeric_limits<int>::max() / numL)
+            throw std::runtime_error("invalid or oversized customer/depot counts");
+        numC = numV + numL;
+    };
+    if (extension == "txt") {
+        readFarham(pathInstance);
+        if (isOptimal && std::floor(bestDis) != bestDis)
+            throw std::runtime_error("Set F requires an integer reference when isOptimal is set");
+    } else if (extension == "json" || extension == "dat") {
+        std::vector<double> coordinatesX, coordinatesY, openingCosts;
+        std::vector<int> demands, inventories;
+        if (extension == "json") {
+            const std::string source((std::istreambuf_iterator<char>(inputFile)), std::istreambuf_iterator<char>());
+            if (inputFile.bad()) throw std::runtime_error("instance read failed");
+            const auto root = masp_input::JsonParser(source).parse();
+            const auto& customers = root.required("customers");
+            const auto& depots = root.required("depots");
+            if (customers.kind != masp_input::Json::Array || depots.kind != masp_input::Json::Array ||
+                customers.array.size() > std::size_t(std::numeric_limits<int>::max()) ||
+                depots.array.size() > std::size_t(std::numeric_limits<int>::max()))
+                throw std::runtime_error("customers and depots must be bounded JSON arrays");
+            numV = static_cast<int>(customers.array.size());
+            numL = static_cast<int>(depots.array.size());
+            dimensions();
+            for (const auto& customer : customers.array) {
+                coordinatesX.push_back(customer.numeric("x"));
+                coordinatesY.push_back(customer.numeric("y"));
+                demands.push_back(integer(customer.numeric("demand"), "customer demand"));
+            }
+            for (const auto& depot : depots.array) {
+                coordinatesX.push_back(depot.numeric("x"));
+                coordinatesY.push_back(depot.numeric("y"));
+                inventories.push_back(integer(depot.numeric("capacity"), "depot capacity"));
+                openingCosts.push_back(depot.numeric("costs"));
+            }
+            vehCap = integer(root.numeric("vehicle_capacity"), "vehicle capacity");
+            usingCostVeh = root.numeric("vehicle_costs");
+            realOrInteger = 0;
+        } else {
+            auto token = [&](const std::string& field) {
+                std::string text;
+                if (!(inputFile >> text)) throw std::runtime_error("missing DAT field: " + field);
+                std::size_t used = 0;
+                double number;
+                try { number = std::stod(text, &used); }
+                catch (const std::exception&) { throw std::runtime_error("invalid DAT field: " + field); }
+                if (used != text.size() || !std::isfinite(number))
+                    throw std::runtime_error("invalid DAT field: " + field);
+                return number;
+            };
+            numV = integer(token("customer count"), "customer count");
+            numL = integer(token("depot count"), "depot count");
+            dimensions();
+            coordinatesX.resize(numC); coordinatesY.resize(numC);
+            demands.resize(numV); inventories.resize(numL); openingCosts.resize(numL);
+            for (int i = numV; i < numC; ++i) {
+                coordinatesX[i] = token("depot x"); coordinatesY[i] = token("depot y");
+            }
+            for (int i = 0; i < numV; ++i) {
+                coordinatesX[i] = token("customer x"); coordinatesY[i] = token("customer y");
+            }
+            vehCap = integer(token("vehicle capacity"), "vehicle capacity");
+            for (int& capacity : inventories) capacity = integer(token("depot capacity"), "depot capacity");
+            for (int& demand : demands) demand = integer(token("customer demand"), "customer demand");
+            for (double& cost : openingCosts) cost = token("depot opening cost");
+            usingCostVeh = token("vehicle cost");
+            realOrInteger = integer(token("metric flag"), "metric flag");
+            std::string extra;
+            if (inputFile >> extra) throw std::runtime_error("unexpected data after DAT metric flag");
+            if (inputFile.bad()) throw std::runtime_error("instance read failed");
+        }
+        if (vehCap <= 0 || usingCostVeh < 0 || !std::isfinite(usingCostVeh) ||
+            (realOrInteger != 0 && realOrInteger != 1))
+            throw std::runtime_error("invalid vehicle capacity, cost or metric flag");
+        long long demandSum = 0, inventorySum = 0;
+        for (int demand : demands) {
+            if (demand <= 0 || demand > vehCap)
+                throw std::runtime_error("Set S requires positive demands no greater than vehicle capacity");
+            demandSum += demand;
+            if (demandSum > std::numeric_limits<int>::max()) throw std::runtime_error("total demand exceeds integer range");
+        }
+        for (int i = 0; i < numL; ++i) {
+            if (inventories[i] <= 0 || openingCosts[i] < 0 || !std::isfinite(openingCosts[i]))
+                throw std::runtime_error("invalid depot capacity or opening cost");
+            inventorySum += inventories[i];
+        }
+        if (inventorySum < demandSum) throw std::runtime_error("total depot capacity is below customer demand");
+        define();
+        for (int i = 0; i < numC; ++i) { x[i] = coordinatesX[i]; y[i] = coordinatesY[i]; }
+        for (int i = 0; i < numV; ++i) demCus[i] = demands[i];
+        for (int i = 0; i < numL; ++i) {
+            invLoc[numV + i] = inventories[i]; openCostLoc[numV + i] = openingCosts[i];
+        }
+        readDepotConfigurations();
+    } else {
+        throw std::runtime_error("unsupported instance extension: " + extension);
+    }
 	totalDemand=0;
 	maxDemand=0;
 	for (int i=0; i < numV; i++){
@@ -219,10 +195,8 @@ void read_data::read_fun(std::string pathInstance,std::string pathDepotCon,std::
 	normalizaPara = (hardTimeWindows && totalDemand == 0) ? 1.0 : double(numV) / double(totalDemand);
 	avgDemand = double(totalDemand) / double(numV);
 	//
-	int numOfVeh;
 	maxVnum=0;
 	for (int i=0; !hardTimeWindows && i<numL;i++){
-		numOfVeh =ceil(1.2*totalDemand/vehCap)+5;
 		maxVnum += safeRouteLimit(i);
 	}
 	if (hardTimeWindows) maxVnum = numV * numL;
@@ -235,38 +209,44 @@ void read_data::read_fun(std::string pathInstance,std::string pathDepotCon,std::
 			break;
 		}
 	}
-	/***********************************************************************************************/
-	/*give the distance matrix*/
+
 	maxDist=0;
 	for (int i=0;i<numV;i++){
 		for (int j=0;j<numV;j++){
-			D[i][j]=(sqrt((x[i]-x[j])*(x[i]-x[j])+(y[i]-y[j])*(y[i]-y[j])));
+			D[i][j]=std::sqrt((x[i]-x[j])*(x[i]-x[j])+(y[i]-y[j])*(y[i]-y[j]));
 			if (D[i][j]>maxDist)
 				maxDist=D[i][j];
 		}
 	}
 	for (int i=0; i < numV;i++){
 		for (int j=numV; j<numC; j++){
-			D[i][j] = (sqrt((x[i]-x[j])*(x[i]-x[j])+(y[i]-y[j])*(y[i]-y[j])));
+			D[i][j] = std::sqrt((x[i]-x[j])*(x[i]-x[j])+(y[i]-y[j])*(y[i]-y[j]));
 			D[j][i] = D[i][j];
 		}
 	}
 	for (int i=numV; i<numC; i++)
 		for (int j=numV; j<numC; j++)
 			D[i][j] = 0;
+	for (int i = 0; i < numC; ++i) {
+		for (int j = 0; j < numC; ++j) {
+			if (!std::isfinite(D[i][j])) throw std::runtime_error("coordinate distance exceeds numeric range");
+		}
+	}
 	if (realOrInteger == 0)
 		for (int i=0;i<numC;i++)
 			for (int j=0;j<numC;j++)
-				D[i][j] = (int)(ceil(D[i][j]*100));
+				{
+                    const double scaled = std::ceil(D[i][j] * 100);
+                    if (!std::isfinite(scaled) || scaled > std::numeric_limits<int>::max())
+                        throw std::runtime_error("Set S scaled distance exceeds integer range");
+                    D[i][j] = scaled;
+                }
 	if (hardTimeWindows)
 		for (int i=0;i<numC;i++)
 			for (int j=0;j<numC;j++)
 				D[i][j] = std::floor(D[i][j] + 1e-12);
 	// the most key element to decide promising depot configurations.
-	/****************************************************************************/
 
-	/****************************************************************************/
-	/* construct sparse graph****************/
 	std::vector < std::set < int > > setCorrelatedVertices = std::vector < std::set <int> >(numC);
 	std::vector < std::pair <double, int> > orderProximity;
 	for (int i = 0; i <numV; i++){
@@ -313,8 +293,7 @@ void read_data::read_fun(std::string pathInstance,std::string pathDepotCon,std::
 	for (int i = 0; i <numL; i++)
 		for (int x : setCorrelatedLocation[i])
 			edgeLocVec[i].push_back(x);
-	/****************************************************///
-
+	//
 
 	//decide whether used extra depot configurations
 	if (hardTimeWindows) {
@@ -413,69 +392,29 @@ std::vector<std::string>read_data:: splitwithstr(std::string &str,char ch){
 	  return res;
 }
 //
-bool read_data::stopCondition(double dis){
-	if (experimentRemaining() <= 0) {
-		experimentTerminationReason = "elapsed_deadline";
-		return true;
-	}
-	if (experimentMode) {
-		if (!std::isfinite(dis)) throw std::runtime_error("Study encountered a non-finite incumbent");
-		if (isOptimal && dis < bestDis)
-			throw std::runtime_error("Study feasible incumbent is below the frozen Opt reference; semantic audit required");
-		if (isOptimal && dis == bestDis) {
-			if (!experimentOptimumAccepted) {
-				const std::size_t slash = pathSolution.find_last_of("/\\");
-				const std::string directory = slash == std::string::npos ? "" : pathSolution.substr(0, slash + 1);
-				if (!std::ifstream(directory + "optimum_candidate.txt").good())
-					throw std::runtime_error("Opt acknowledgement requested without an exported optimum_candidate.txt");
-				const auto started = std::chrono::steady_clock::now();
-				while (true) {
-					if (std::ifstream(directory + "optimum.rejected").good())
-						throw std::runtime_error("Independent coordinator validation rejected the Opt candidate");
-					std::ifstream accepted(directory + "optimum.accepted");
-					if (accepted.good()) {
-						std::string token, extra;
-						accepted >> token;
-						if (token != "ACCEPTED" || (accepted >> extra))
-							throw std::runtime_error("Invalid Opt acknowledgement token");
-						experimentOptimumAccepted = true;
-						break;
-					}
-					if (std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count() >= 300.0)
-						throw std::runtime_error("Independent Opt acknowledgement timed out after 300 wall seconds");
-					std::this_thread::sleep_for(std::chrono::milliseconds(10));
-				}
-				experimentOptAckWallSeconds += std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
-			}
-			experimentTerminationReason = "verified_optimum";
-			return true;
-		}
-		if (double(clock()) / CLOCKS_PER_SEC > timeLimit) {
-			experimentTerminationReason = "cpu_safety_limit";
-			return true;
-		}
-		if (iteration > iterLimit) {
-			experimentTerminationReason = "counter_limit";
-			return true;
-		}
-		if (meetOptimal && bestDis > 0 && dis <= bestDis) {
-			timeToTarget = double(clock()) / CLOCKS_PER_SEC;
-			meetOptimal = false;
-		}
-		return false;
-	}
-	if ((double)clock()/(double)CLOCKS_PER_SEC > timeLimit)
-		return true;
-	if (iteration > iterLimit)
-		return true;
-	if (meetOptimal && bestDis > dis +Min){
-		timeToTarget = (double)clock()/(double)CLOCKS_PER_SEC;
-		meetOptimal = false;
-	}
-	if (std::abs(bestDis - dis) < 0.01){
-		if (isOptimal)return true;
-	}
-	return false;
+bool read_data::stopCondition(double dis) {
+    if (experimentRemaining() <= 0) {
+        experimentTerminationReason = "elapsed_deadline";
+        return true;
+    }
+    // bestDis is a caller-supplied target, not an independent optimality proof.
+    if (bestDis > 0 && std::isfinite(dis) && dis <= bestDis) {
+        if (meetOptimal) {
+            timeToTarget = double(clock()) / CLOCKS_PER_SEC;
+            meetOptimal = false;
+        }
+        experimentTerminationReason = "target_reached";
+        return true;
+    }
+    if (double(clock()) / CLOCKS_PER_SEC > timeLimit) {
+        experimentTerminationReason = "cpu_limit";
+        return true;
+    }
+    if (iteration > iterLimit) {
+        experimentTerminationReason = "counter_limit";
+        return true;
+    }
+    return false;
 }
 bool read_data::equalTwoVar(double A, double B){
 	if (abs(A-B) < Min)return true;
@@ -493,7 +432,7 @@ void read_data::analyzeLocation(){
 //	if (locCostSignificant == 1 || locCostSignificant == 0)
 //		tabuSearchFindCompactConfiguration();
 //	else
-	int min_depot = Max;
+	int min_depot = std::numeric_limits<int>::max();
 	int max_depot = 0;
 	for (int i=numV;i<numC;i++){
 		if (min_depot > invLoc[i])
@@ -511,7 +450,6 @@ void read_data::analyzeLocation(){
 	//	for (int i=0;i<numV;i++){
 	//		invLoc[customerToLoc[i][0]] += demCus[i] * 2;
 	//	}
-
 
 		constructedDepotConfigurations();
 		std::cout<<"The number of Depot Configurations is: "<<(int)LocConfigure.size()<<std::endl;
@@ -544,7 +482,7 @@ void read_data::analyzeLocation(){
 	std::sort(locRatio.begin(),locRatio.end());
 }
 void read_data::analyzeConflict(){
-	double min_x = Max, min_y = Max, max_x = 0,max_y = 0;
+	double min_x = std::numeric_limits<double>::infinity(), min_y = min_x, max_x = -min_x, max_y = -min_x;
 	double range_x, range_y;
 	for (int i=0;i<numC;i++){
 		if (x[i] < min_x) min_x = x[i];
@@ -552,7 +490,7 @@ void read_data::analyzeConflict(){
 		if (x[i] > max_x) max_x = x[i];
 		if (y[i] > max_y) max_y = y[i];
 	}
-	double range_loc, min_loc = Max, max_loc = 0;
+	double range_loc, min_loc = std::numeric_limits<double>::infinity(), max_loc = 0;
 	for (int i=numV;i<numC;i++){
 		if (invLoc[i] < min_loc)min_loc = invLoc[i];
 		if (invLoc[i] > max_loc)max_loc = invLoc[i];
@@ -560,28 +498,9 @@ void read_data::analyzeConflict(){
 	range_loc = max_loc - min_loc;
 	range_x = max_x - min_x;
 	range_y = max_y - min_y;
-	//decide the instance whether fixed location costs significant.
-	double avgCost = 0;
-	int count = 0;
-	for (int i=0;i<numV;i++){
-		for (int j=0;j<(int)edgeNode[i].size();j++){
-			avgCost += edgeNode[i][j];
-			count ++;
-		}
-	}
-	avgCost = avgCost / count;
-	//double travelCost = avgCost * numV;
-	double locCost = 0;
-	for (int i=0;i<numL;i++)
-		locCost += openCostLoc[i + numV];
-	// there are two cases. the first case is type C and the other cases are all other instances
-//	if (travelCost > locCost * 10)// this type is not complete since types a b d are not
-//		locCostSignificant = 0;// type c
-//	else if (travelCost * 100 < locCost)
-//		locCostSignificant = 1;// type e
-//	else locCostSignificant = 2;
 	//the following is to decide some locations conflict
 	double dis_measure = (range_x + range_y) / 2.;
+	if (dis_measure == 0) return;
 	double ratio = range_loc / min_loc;// if the value is greater than 1, it is type e, otherwise it is other type.
 	double xx,yy,xy;
 	for (int i=numV;i<numC;i++){
@@ -611,20 +530,12 @@ void read_data::analyzeConflict(){
 			}
 		}
 	}
-/*
-	for (int i=0;i<numL;i++){
-		for (int j=0;j<numL;j++)
-			std::cout<<conflictLoc[i][j]<<" ";
-		std::cout<<std::endl;
-	}
-*/
+
 }
 void read_data::spanningTreeForLoc(){
-	int * check_cus;
-	check_cus = new int [numV];
+	std::vector<int> check_cus(numV);
 
-	double * low_cost;
-	low_cost = new double [numV];
+	std::vector<double> low_cost(numV);
 
 	//////////////the following is the spanning tree method
 	double min_dis;
@@ -641,7 +552,7 @@ void read_data::spanningTreeForLoc(){
 		while(1){
 			int totalVeh = 0;
 			for (int i=0;i< numV;i++){
-				min_dis=Max;
+				min_dis=std::numeric_limits<double>::infinity();
 				v=-1;
 				for (int j=0;j<numV;j++){
 					if (check_cus[j]==0 && min_dis>low_cost[j]){
@@ -663,67 +574,49 @@ void read_data::spanningTreeForLoc(){
 				}
 			}
 			numVehicle++;
-			if (total_dem + demCus[v] >= invLoc[l+numV] || total_dem + demCus[v] == totalDemand)break;
+			if (v < 0 || total_dem >= invLoc[l+numV] || total_dem >= totalDemand) break;
+            if (total_dem + demCus[v] >= invLoc[l+numV]) break;
 			for (int j=0;j<numV;j++)
 				if (check_cus[j] == 1)
-					low_cost[j]=Max;
+					low_cost[j]=std::numeric_limits<double>::infinity();
 
 		}
 		double cost_loc = openCostLoc[l + numV] + total_dis_loc + numVehicle * usingCostVeh;
 	//	locRatio.push_back({ cost_loc / double(total_dem), l+numV});
 		locRatio.push_back({(double)cost_loc, l+numV});
 	}
-	delete [] check_cus;
-	delete [] low_cost;
 	//
-/*	double total_dis_loc;
-	int total_dem;
-	for (int l=0;l<numL;l++){
-		for (int i=0;i<numV;i++)check_cus[i] = 0;
-		total_dis_loc = 0;
-		total_dem = 0;
-		for (int i=0;i<numV;i++){
-			if (total_dem + demCus[nearCityLoca[l][i]] <= invLoc[l+numV]){
-				total_dem += demCus[nearCityLoca[l][i]];
-				total_dis_loc += D[l+numV][i];
-				locIncCus[l].insert(nearCityLoca[l][i]);
-			}
-			else break;
-		}
-		double cost_loc = openCostLoc[l + numV] + total_dis_loc;
-	//	locRatio.push_back({ cost_loc / double(total_dem), l+numV});
-		locRatio.push_back({(double)cost_loc, l+numV});
-	}
-*/
+
 }
 
 void read_data::tabuSearchFindCompactConfiguration(){
 	std::vector<std::set<int>> listLocConfigure;
 	// using tabu search to determine that does this instance has perfect locations configurations
-	int *sol,*best_sol, *tabu_table, *dem;
-	sol = new int [numL];
-	best_sol = new int [numL];
-	tabu_table = new int [numL];
+	std::vector<int> sol(numL), best_sol(numL), tabu_table(numL);
+    std::vector<double> dem(numL);
 	for (int i=0;i<numL;i++)tabu_table[i] = 0;
-	dem = new int [numL];
-	int cusDem = 0;
-	int obj=0,best_obj;
+	long long cusDem = 0;
+	double obj=0,best_obj;
 	// construct a initial solution
 	int count;
 	for (int i=0;i<numL;i++){
 		dem[i] = locRatio[i].first;
 	}
+    int configurationAttempts = 0;
 	while(1){
+        if (++configurationAttempts > 1000 || stopCondition(std::numeric_limits<double>::infinity()))
+            throw std::runtime_error("depot configuration construction exhausted its attempt/time budget");
 		for (int i=0;i<numL;i++)sol[i] = 0;
+        cusDem = 0; obj = 0;
 		int seed = RandomInt(0, numL - 1);
-		int cumLoc = 0;
+		long long cumLoc = 0;
 		count = 0;
 		while(1){
 			cumLoc += invLoc[seed+numV];
 			sol[seed] = 1;
 			cusDem += invLoc[seed+numV];
 			obj += dem[seed];
-			if (cumLoc > totalDemand)break;
+			if (cumLoc >= totalDemand)break;
 			count = 0;
 			while(1){
 				seed = RandomInt(0, numL - 1);
@@ -752,7 +645,7 @@ void read_data::tabuSearchFindCompactConfiguration(){
 	int can_node_1[100],can_node_2[100];
 	int can_tabu_node_1[100],can_tabu_node_2[100];
 	//
-	int delta,min_delta, min_tabu_delta;
+	double delta,min_delta, min_tabu_delta;
 	int num_best, num_tabu_best;
 	int no_improve = 0;
 	double tabuLength = 0.3;
@@ -762,7 +655,7 @@ void read_data::tabuSearchFindCompactConfiguration(){
 	int loc1, loc2;
 
 	while (1){
-		min_delta=Max;min_tabu_delta=Max;num_best=0;num_tabu_best=0;
+		min_delta=std::numeric_limits<double>::infinity();min_tabu_delta=std::numeric_limits<double>::infinity();num_best=0;num_tabu_best=0;
 		for (int i=0;i<numL;i++){
 			if (sol[i] == 1){
 				if (cusDem - invLoc[i+numV] >= totalDemand){
@@ -863,7 +756,7 @@ void read_data::tabuSearchFindCompactConfiguration(){
 						can_node_2[0] = -2;
 						num_best = 1;
 					}
-					else{
+					else if (delta == min_delta && num_best < 100) {
 						can_node_1[num_best] = i;
 						can_node_2[num_best] = -2;
 						num_best ++;
@@ -884,7 +777,15 @@ void read_data::tabuSearchFindCompactConfiguration(){
 				}
 			}
 		}
-		if (min_tabu_delta == Max && min_delta == Max)break;
+		if (!std::isfinite(min_tabu_delta) && !std::isfinite(min_delta)) {
+                if (LocConfigure.empty()) {
+                    std::set<int> current;
+                    double cost = 0;
+                    for (int i = 0; i < numL; ++i) if (sol[i]) { current.insert(i + numV); cost += dem[i]; }
+                    if (cusDem >= totalDemand && !current.empty()) LocConfigure.push_back({cost, current});
+                }
+                break;
+            }
 		int rand_order;
 		if ((num_tabu_best>0 && min_tabu_delta < min_delta && (obj + min_tabu_delta< best_obj)) || num_best==0){
 			obj += min_tabu_delta;
@@ -933,13 +834,7 @@ void read_data::tabuSearchFindCompactConfiguration(){
 			break;
 		}
 		//
-/*		for (int i=0;i<numL;i++)
-			std::cout<<i<<" ";
-		std::cout<<std::endl;
-		for (int i=0;i<numL;i++)
-			std::cout<<sol[i]<<" ";
-		std::cout<<std::endl;
-*/
+
 		//
 		std::set<int>depot;
 		double cost = 0;
@@ -949,7 +844,7 @@ void read_data::tabuSearchFindCompactConfiguration(){
 				cost += dem[i];
 			}
 		////////////////////////////
-		int sumDem = 0;
+		long long sumDem = 0;
 		for (int i=0;i<numL;i++){
 			if (sol[i] == 1)
 				sumDem += invLoc[i+numV];
@@ -964,7 +859,6 @@ void read_data::tabuSearchFindCompactConfiguration(){
 		}
 		if (isContinue)continue;
 		/////////////////////////////
-
 
 		bool same = true;
 		for (int i=0;i<(int)LocConfigure.size();i++){
@@ -996,61 +890,10 @@ void read_data::tabuSearchFindCompactConfiguration(){
 //		if (sol[4] == 1 && sol[6] == 1 && sol[14] == 1 && sol[16] == 1)
 //			std::cout<<" the best results  "<<std::endl;
 	}
-	delete [] sol;
-	delete [] best_sol;
-	delete [] tabu_table;
-	delete [] dem;
 	//
 //	std::sort(LocConfigure.begin(), LocConfigure.end());
 	//
-/*	std::set<int>depot;
-	depot.insert(304);
-	depot.insert(306);depot.insert(314);depot.insert(316);
-	LocConfigure.push_back({100,depot});
-	std::sort(LocConfigure.begin(), LocConfigure.end());
-*/
-/*  this code repeates the evaluated function of Schneider's paper
-	std::set<int>depot;
-	depot.insert(200);
-	depot.insert(203);depot.insert(204);depot.insert(205);depot.insert(206);depot.insert(210);
-	LocConfigure.push_back({100,depot});
-	std::sort(LocConfigure.begin(), LocConfigure.end());
-	return;
 
-	LocConfigure.push_back({100,depot});
-	std::vector<int>loc;
-	for (int i=0;i<(int)LocConfigure.size();i++){
-		loc.clear();
-		auto it = LocConfigure[i].second.begin();
-		for (;it != LocConfigure[i].second.end();it++)
-			loc.push_back(*it);
-		//computing the rating function
-		double costLoc = 0;
-		double part1 = 0,part2 = 0;
-		for (int j=0;j<(int)loc.size();j++){
-			for (int k=0;k<numV;k++)
-				part1 += demCus[k] * pow(0.95, (D[loc[j]][k]* 2)/100);
-
-			for (int k=0;k<(int)loc.size();k++)
-				part2 += invLoc[loc[k]] * pow(0.95, (D[loc[j]][loc[k]] * 2)/100);
-			costLoc += std::abs(part1 - part2) + openCostLoc[loc[j]];
-		}
-		LocConfigure[i].first = costLoc;
-	}
-	std::sort(LocConfigure.begin(), LocConfigure.end());
-*/
-
-
-
-/*	for (int i=0;i < (int)LocConfigure.size(); i++){
-		auto it = LocConfigure[i].second.begin();
-		while(it != LocConfigure[i].second.end()){
-			std::cout<<*it<<" ";
-			it ++;
-		}
-		std::cout<<std::endl;
-	}
-	*/
 }
 void read_data::constructedDepotConfigurations(){
 	//the line function to estimate the coverRatio
@@ -1058,7 +901,7 @@ void read_data::constructedDepotConfigurations(){
 	double max_coverRatio = 0.6;
 	double kParameter = max_coverRatio - min_coverRatio;
 	//
-	solutionTabu = new int [dimension];
+	std::vector<int> solutionTabu(dimension, 0);
 	for (int i=0;i<dimension;i++)
 		solutionTabu[i] = 0;
 	int seed;
@@ -1066,7 +909,7 @@ void read_data::constructedDepotConfigurations(){
 	double costDepotConf;
 	int countOver;
 	int iter;
-	int totalDem;
+	long long totalDem;
 	std::set<int>coverVertex;
 	std::vector<std::pair<double, int>>priorityOrder;// the first is the ratio of overlaping vertices and the second is the order of depot
 	std::set<int>sol;
@@ -1079,6 +922,10 @@ void read_data::constructedDepotConfigurations(){
 	bool isUsed;
 	isUsed = true;
 	while(1){
+        if (stopCondition(std::numeric_limits<double>::infinity())) {
+            if (LocConfigure.empty()) throw std::runtime_error("depot configuration construction exhausted its time budget");
+            break;
+        }
 		sol.clear();
 		depot.clear();
 		coverVertex.clear();
@@ -1092,6 +939,7 @@ void read_data::constructedDepotConfigurations(){
 		auto it = locIncCus[seed].begin();
 		for (;it != locIncCus[seed].end(); it++) coverVertex.insert(*it);
 		while(totalDem < totalDemand){// select other depots
+            if (depot.empty()) throw std::runtime_error("cannot construct a capacity-feasible depot configuration");
 			priorityOrder.clear();
 			for (int i=0;i<(int)depot.size();i++){//deicde the overlapping vertices
 				countOver = 0;iter = 0;
@@ -1106,13 +954,13 @@ void read_data::constructedDepotConfigurations(){
 					iter ++;
 				}
 
-				double var = (double)countOver / (double)iter;
+				double var = iter ? (double)countOver / (double)iter : 0.0;
 				priorityOrder.push_back({var, depot[i]});
 			}
 			sort(priorityOrder.begin(), priorityOrder.end());
 			orderDepots.clear();
 			for (int i=0;i<(int)priorityOrder.size();i++){
-				int cap = invLoc[priorityOrder[i].second + numV] + totalDem;
+				long long cap = invLoc[priorityOrder[i].second + numV] + totalDem;
 				coverRatio = kParameter * ((double)cap / (double)totalDemand) + min_coverRatio;
 				if (priorityOrder[i].first > coverRatio)break;// discard these non-promising depots
 				else orderDepots.push_back({locRatio[priorityOrder[i].second].first,priorityOrder[i].second});
@@ -1128,7 +976,7 @@ void read_data::constructedDepotConfigurations(){
 					while ((int)orderDepots.size() == 0){
 						coverRatio += 0.1;
 						for (int i=0;i<(int)priorityOrder.size();i++){
-						//	int cap = invLoc[priorityOrder[i].second + numV] + totalDem;
+						//	long long cap = invLoc[priorityOrder[i].second + numV] + totalDem;
 						//	coverRatio = kParameter * ((double)cap / (double)totalDemand) + min_coverRatio;
 							if (priorityOrder[i].first > coverRatio)break;// discard these non-promising depots
 							else orderDepots.push_back({locRatio[priorityOrder[i].second].first,priorityOrder[i].second});
@@ -1158,12 +1006,11 @@ void read_data::constructedDepotConfigurations(){
 			costDepotConf += locRatio[seed].first;
 			totalDem += invLoc[seed+numV];
 		}
-		if (orderDepots.size() == 0){
-			no_get ++;
-			iteration ++;
-			continue;
-		}
-
+        if (totalDem < totalDemand) {
+            ++no_get; ++iteration;
+            if (no_get > 1000) break;
+            continue;
+        }
 
 		it = sol.begin();
 		array.clear();
@@ -1194,30 +1041,44 @@ void read_data::constructedDepotConfigurations(){
 		iteration++;
 	//	std::cout<<iteration<<"   "<<(int)LocConfigure.size()<<std::endl;
 	}
-	delete [] solutionTabu;
 }
 
-void read_data::readDepotConfigurations(){
-	std::vector<int>array;
-	std::string var;
-	if (pathDepotCon != "NULL"){
-		std::ifstream inputFile(pathDepotCon);
-		inputFile.exceptions(std::ios::failbit | std::ios::badbit);
-		if (inputFile.is_open()){
-			int numDepotCon;
-			inputFile >> numDepotCon;
-			for (int i=0;i<numDepotCon;i++){
-				array.clear();
-				inputFile >> var;
-				while(var != "e"){
-					array.push_back(std::stoi(var) + numV);
-					inputFile >> var;
-				}
-				depotCon.push_back(array);
-			}
-		}
-		else
-			std::cout<<"The input depot configuration file is wrong"<<std::endl;
-	}
-	else return;
+void read_data::readDepotConfigurations() {
+    if (pathDepotCon == "NULL") return;
+    std::ifstream input(pathDepotCon);
+    if (!input) throw std::runtime_error("cannot open depot configurations: " + pathDepotCon);
+    auto readInteger = [&](const std::string& token) {
+        std::size_t used = 0;
+        long long value;
+        try { value = std::stoll(token, &used); }
+        catch (const std::exception&) { throw std::runtime_error("invalid depot configuration integer: " + token); }
+        if (used != token.size() || value < 0 || value > std::numeric_limits<int>::max())
+            throw std::runtime_error("invalid depot configuration integer: " + token);
+        return static_cast<int>(value);
+    };
+    std::string token;
+    if (!(input >> token)) throw std::runtime_error("missing depot configuration count");
+    const int count = readInteger(token);
+    if (count == 0) throw std::runtime_error("depot configuration list must not be empty");
+    for (int i = 0; i < count; ++i) {
+        std::vector<int> configuration;
+        std::set<int> seen;
+        bool ended = false;
+        while (input >> token) {
+            if (token == "e") { ended = true; break; }
+            const int depot = readInteger(token);
+            if (depot >= numL || !seen.insert(depot).second)
+                throw std::runtime_error("out-of-range or duplicate depot configuration index");
+            configuration.push_back(numV + depot);
+        }
+        if (!ended || configuration.empty()) throw std::runtime_error("incomplete or empty depot configuration");
+        long long capacity = 0;
+        for (int depot : configuration) capacity += invLoc[depot];
+        long long demand = 0;
+        for (int c = 0; c < numV; ++c) demand += demCus[c];
+        if (capacity < demand) throw std::runtime_error("depot configuration capacity is below total demand");
+        depotCon.push_back(std::move(configuration));
+    }
+    if (input >> token) throw std::runtime_error("unexpected data after depot configurations");
+    if (input.bad()) throw std::runtime_error("depot configuration read failed");
 }

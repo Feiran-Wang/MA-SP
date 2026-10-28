@@ -2,18 +2,14 @@
 #include "LS.h"
 #include "basic.h"
 #include "Individual.h"
-LS::LS(read_data * data, RepairProcedure *repair) {
+LS::LS(read_data * data) {
 	this->data=data;
-	this->repair = repair;
 	this->numV = data->numV;
 	this->numC = data->numC;
-	this->numL = data->numL;
 	for (int i=0;i<numV;i++)
 		orderNodes.push_back(i);
-	auxArray1 = new int [numV];
 }
 LS::~LS() {
-	delete [] auxArray1;
 }
 double LS::compute(bool istrue, double value){
 	if (istrue)	return 0.;
@@ -88,8 +84,8 @@ bool LS::Splitf(){
 		if (loc != nodeU->route->whichLocation->cour){
 			Node * beginU = nodeU->route->depot->next;
 		//	if (nodeU == lastU)return false;
-			if (s->location[loc-numV].remainInven + nodeU->cumulatedLoad > s->location[loc-numV].inventory)return false;
-			if (s->location[loc - numV].emptyRoutes.empty())return false;
+			if (s->location[loc-numV].remainInven + nodeU->cumulatedLoad > s->location[loc-numV].inventory)continue;
+			if (s->location[loc - numV].emptyRoutes.empty())continue;
 			moveGain = compute(s->location[loc-numV].used, data->openCostLoc[loc])
 					- compute(!(nodeU->route->whichLocation->splitTime == 1 && nodeU->next->isDepot), data->openCostLoc[nodeU->route->whichLocation->cour])
 					- compute(!nodeU->next->isDepot, data->usingCostVeh) + data->usingCostVeh
@@ -115,20 +111,14 @@ bool LS::Splitf(){
 			rr->depot->next = beginU;
 			nodeU->next= rr->endDepot;
 			rr->endDepot->pre = nodeU;
+			++nbMoves;
+			searchComplete = false;
 			s->updateRouteInfor(routeU->cour,nbMoves);
 			s->updateRouteInfor(rr->cour, nbMoves);
 
 			s->updateLocationInfor(routeU->whichLocation->cour);
 			s->updateLocationInfor(nodeU->route->whichLocation->cour);
-/*			s->outputSolution();
-			s->isRight();
-			distt += moveGain;
-			s->evaluationDis();
-			if (!data->equalTwoVar(distt,s->fit)){
-				std::cout<<"the distance is wrong"<<std::endl;
-				exit(0);
-			}
-*/
+
 			return true;
 		}
 	}
@@ -140,8 +130,8 @@ bool LS::Splitb(){
 		if (loc != nodeU->route->whichLocation->cour){
 			Node * lastU = nodeU->route->endDepot->pre;
 		//	if (nodeU == lastU)return false;
-			if (s->location[loc-numV].remainInven + (nodeU->route->load - nodeU->pre->cumulatedLoad) > s->location[loc-numV].inventory)return false;
-			if (s->location[loc - numV].emptyRoutes.empty())return false;
+			if (s->location[loc-numV].remainInven + (nodeU->route->load - nodeU->pre->cumulatedLoad) > s->location[loc-numV].inventory)continue;
+			if (s->location[loc - numV].emptyRoutes.empty())continue;
 			moveGain = compute(s->location[loc-numV].used, data->openCostLoc[loc])
 					- compute(!(nodeU->route->whichLocation->splitTime == 1 && nodeU->pre->isDepot), data->openCostLoc[nodeU->route->whichLocation->cour])
 					- compute(!nodeU->pre->isDepot, data->usingCostVeh) + data->usingCostVeh
@@ -166,20 +156,14 @@ bool LS::Splitb(){
 			rr->depot->next = nodeU;
 			lastU->next= rr->endDepot;
 			rr->endDepot->pre = lastU;
+			++nbMoves;
+			searchComplete = false;
 			s->updateRouteInfor(routeU->cour,nbMoves);
 			s->updateRouteInfor(rr->cour,nbMoves);
 
 			s->updateLocationInfor(routeU->whichLocation->cour);
 			s->updateLocationInfor(nodeU->route->whichLocation->cour);
-/*			s->outputSolution();
-			s->isRight();
-			distt += moveGain;
-			s->evaluationDis();
-			if (!data->equalTwoVar(distt,s->fit)){
-				std::cout<<"the distance is wrong"<<std::endl;
-				exit(0);
-			}
-*/
+
 			return true;
 		}
 	}
@@ -713,8 +697,6 @@ void LS::setLocalVariableRouteU(){
 	nodeUIndex = nodeU->cour;
 	nodeUPrevIndex = nodeU->pre->cour;
 	nodeXIndex = nodeX->cour;
-	loadU=nodeU->dem;
-	loadX=nodeX->dem;
 }
 void LS::setLocalVariableRouteV(){
 	routeV=nodeV->route;
@@ -723,8 +705,6 @@ void LS::setLocalVariableRouteV(){
 	nodeVIndex=nodeV->cour;
 	nodeVPrevIndex=nodeV->pre->cour;
 	nodeYIndex=nodeY->cour;
-	loadV=nodeV->dem;
-	loadY=nodeY->dem;
 }
 void LS::insertNode(Node *U, Node *V){
 	U->pre->next = U->next;
@@ -766,15 +746,11 @@ void LS::loadSolution(){
 		}
 	}
 }
-void LS::local_search_run(Individual *s,double penaltyDepot, double penaltyVeh){
+void LS::local_search_run(Individual *s,double, double){
 	if (data->hardTimeWindows) {
 		if (s->isFeasible) masptw::localSearch(s, data);
 		return;
 	}
-	this->penaltyDepot = penaltyDepot;
-	this->penaltyDepot=Max;// no infeasible
-	this->penaltyVeh = penaltyVeh;
-	this->penaltyVeh = Max;
 	this->s=s;
 //	s->isRight();
 	loadSolution();
@@ -786,10 +762,10 @@ void LS::local_search_run(Individual *s,double penaltyDepot, double penaltyVeh){
 
 
 
-	int totalInv = 0;
+	long long totalInv = 0;
 	std::set<std::pair<int, int>>order;
 
-	for (int i=0;i<numL;i++){
+	for (int i=0;i<data->numL;i++){
 		if (s->location[i].used){
 			order.insert({s->location[i].inventory,i});
 			totalInv += s->location[i].inventory;
@@ -809,196 +785,3 @@ void LS::local_search_run(Individual *s,double penaltyDepot, double penaltyVeh){
 /************************************************************************************************/
 /************************************************************************************************/
 /************************************************************************************************/
-void LS::removeLocation(int removeLoc){
-	for (int i=0;i<numV;i++)auxArray1[i]=0;
-	Node *p;
-	for (int i=0;i<s->location[removeLoc].maxVisit;i++){
-		if (s->location[removeLoc].depots[i].route->used){
-			p = s->location[removeLoc].depots[i].next;
-			while(!p->isDepot){
-				listRemove.push_back(p->cour);
-				p = p->next;
-			}
-			s->location[removeLoc].depots[i].next = &s->location[removeLoc].endDepots[i];
-			s->location[removeLoc].endDepots[i].pre = &s->location[removeLoc].depots[i];
-			s->updateRouteInfor(s->location[removeLoc].depots[i].route->cour, -1);
-		}
-	}
-	int ll = removeLoc + numV;
-	s->updateLocationInfor(ll);
-	//
-	for (int i=0;i<(int)listRemove.size();i++){
-		p = &s->client[listRemove[i]];
-		p->pre = NULL;
-		p->next = NULL;
-		auxArray1[p->cour] = 1;
-	}
-	//
-	RandomShuffle(listRemove); // randomize all removed customers
-	double delta, min_delta;
-	Node *node, *nodeU, *pos;bool isFirst;
-	while ((int)listRemove.size() != 0){
-		min_delta = Max; //listRemove
-		pos = NULL;
-		node = &s->client[listRemove[0]];
-		for (int i=0;i<numL;i++){
-			if (s->location[i].used){
-				for (int j=0;j<s->location[i].maxVisit;j++){
-					if (s->location[i].depots[j].route->used && (s->location[i].depots[j].route->load + node->dem <= data->vehCap) && (s->location[i].remainInven + node->dem <= s->location[i].inventory)){
-						nodeU = &s->location[i].depots[j]; isFirst = true;
-						while(isFirst || !nodeU->isDepot){
-							delta = data->D[nodeU->cour][node->cour] + data->D[node->cour][nodeU->next->cour] - data->D[nodeU->cour][nodeU->next->cour];
-							if (min_delta > delta){
-								min_delta = delta;
-								pos = nodeU;
-							}
-							nodeU = nodeU->next;
-							isFirst = false;
-						}
-					}
-				}
-			}
-		}
-		//
-		pos->next->pre = node;
-		node->next = pos->next;
-		pos->next = node;
-		node->pre = pos;
-		node->route = pos->route;
-		//
-		auxArray1[node->cour] = 0;
-		listRemove.erase(listRemove.begin());
-		s->updateRouteInfor(pos->route->cour,-1);
-		s->updateLocationInfor(pos->route->whichLocation->cour);
-	}
-}
-void LS::removeRoute(int removeRou){
-	for (int i=0;i<numV;i++)auxArray1[i] = 0;
-	Node *p = s->route[removeRou].depot->next;
-	while(!p->isDepot){
-		listRemove.push_back(p->cour);
-		p = p->next;
-	}
-	s->route[removeRou].depot->next = s->route[removeRou].endDepot;
-	s->route[removeRou].endDepot->pre = s->route[removeRou].depot;
-	s->updateRouteInfor(removeRou, -1);
-	int ll = s->route[removeRou].whichLocation->cour;
-	s->updateLocationInfor(ll);
-	//
-	for (int i=0;i<(int)listRemove.size();i++){
-		p = &s->client[listRemove[i]];
-		p->pre = NULL;
-		p->next = NULL;
-		p->route = NULL;
-		auxArray1[p->cour] = 1;
-	}
-	RandomShuffle(listRemove);  // randomize all removed customers
-	double delta, min_delta;
-	Node *node, *nodeU, *pos;
-	while ((int)listRemove.size() != 0){
-		min_delta = Max; //listRemove
-		pos = NULL;
-		node = &s->client[listRemove[0]];
-		for (int i=0;i<(int)data->edgeNode[node->cour].size();i++){
-			if (data->edgeNode[node->cour][i] < numV){
-				nodeU = &s->client[data->edgeNode[node->cour][i]];
-				if (nodeU->route != NULL){
-					if (nodeU->route->load + node->dem <= data->vehCap && nodeU->route->whichLocation->remainInven + node->dem <= nodeU->route->whichLocation->inventory){
-						delta = data->D[nodeU->cour][node->cour] + data->D[node->cour][nodeU->next->cour] - data->D[nodeU->cour][nodeU->next->cour];
-						if (delta < min_delta){
-							min_delta = delta;
-							pos = nodeU;
-						}
-					}
-				}
-			}
-		}
-		if (min_delta == Max){
-			for (int i=0;i<(int)data->edgeNode[node->cour].size();i++){
-				if (data->edgeNode[node->cour][i] < numV){
-					nodeU = &s->client[data->edgeNode[node->cour][i]];
-					if (nodeU->route != NULL){
-						delta = data->D[nodeU->cour][node->cour] + data->D[node->cour][nodeU->next->cour] - data->D[nodeU->cour][nodeU->next->cour];
-						if (delta < min_delta){
-							min_delta = delta;
-							pos = nodeU;
-						}
-					}
-				}
-			}
-			if (min_delta == Max){
-				for (int i=0;i<numV;i++){
-					if (s->client[i].route != NULL){
-						nodeU = &s->client[i];
-						delta = data->D[nodeU->cour][node->cour] + data->D[node->cour][nodeU->next->cour] - data->D[nodeU->cour][nodeU->next->cour];
-						if (delta < min_delta){
-							min_delta = delta;
-							pos = nodeU;
-						}
-					}
-				}
-			}
-		}
-		//
-		if (min_delta == Max)std::cout<<"report a bug at removing routes"<<std::endl;
-//		s->outputSolution();
-		pos->next->pre = node;
-		node->next = pos->next;
-		pos->next = node;
-		node->pre = pos;
-		node->route = pos->route;
-		//
-		auxArray1[node->cour] = 0;
-		listRemove.erase(listRemove.begin());
-		s->updateRouteInfor(pos->route->cour,-1);
-		s->updateLocationInfor(pos->route->whichLocation->cour);
-	}
-	/***************************/
-	//repair the infeasible solution
-	s->evaluationDis();
-	repair->repairForInitialSolution(s);
-}
-void LS::removeRoutesAndLocations(Individual *s){
-	//
-	this->s = s;
-	s->getSaturationDegree();
-//	s->outputSolution();
-/*	int sumLoadLoc;
-	while(1){
-		sumLoadLoc = 0;locSat.clear();
-		for (int i=0;i<numL;i++){
-			if (s->location[i].used){
-				sumLoadLoc += s->location[i].inventory;
-				locSat.push_back({(double)s->location[i].remainInven / (double)s->location[i].inventory, i});
-			}
-		}
-		std::sort(locSat.begin(),locSat.end());
-		//
-		if (sumLoadLoc - s->location[locSat[0].second].inventory >= data->totalDemand){// less saturated
-			s->outputSolution();
-			removeLocation(locSat[0].second);
-		}
-		else break;
-	}
-	*/
-	int tarRoute;
-	int sumLoadRou;
-	while(1){// existing non-saturated routes
-		auto it = s->saturatRoute.begin();
-		if (it->first < 0.7){// saturated parameter
-			tarRoute = it->second;// the order of the route.
-			sumLoadRou = ((int)s->saturatRoute.size() - 1) * data->vehCap;
-			if (sumLoadRou > 1. * data->totalDemand)
-				removeRoute(tarRoute);
-		}
-		else
-			break;
-		break;
-		s->getSaturationDegree();
-	}
-	s->decideFeasible();
-	if (!s->isFeasible)return;
-	s->evaluationDis();
-	s->isRight();
-
-}

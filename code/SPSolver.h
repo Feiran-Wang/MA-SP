@@ -18,6 +18,7 @@ public:
     std::vector<StandaloneRoute> solve(const RoutePool* pool, const Individual* incumbent);
     StudyEvents* study = nullptr;
     bool lastTimeoutNoSolution = false;
+    bool lastBudgetExhausted = false;
     long long optimizerStarts = 0;
     double modelBuildCPU = 0;
     double optimizationCPU = 0;

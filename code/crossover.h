@@ -28,10 +28,6 @@ struct Node2{
 struct Node5{
 	std::set<int >cycles;
 };
-struct Node6{
-	int father;
-	int mother;
-};
 class crossover {
 public:
 	crossover(read_data * data,  popManager * popman);
@@ -39,14 +35,13 @@ public:
 	bool gEAX(Individual *fa, Individual *ma, Individual *subPop, int &numSubPop);
 	popManager * popman;
 private:
+	friend struct CrossoverBoundaryChecks;
 	//
 	void loadFaCapMa();
 	//
 	void extractABcycles();
 	void addNodeToABcycles(int &nb, Node0 &tem);
 	void emptyACity(int &city, int &numAvaCity);
-	void exchangeInforNode0(Node0 &node1,Node0 &node2);
-	void randomTheAcapB();
 	//
 	void generationEsets();
 	//
@@ -55,16 +50,13 @@ private:
 	void updateTheLocation();// including elimination giant tours
 	//
 	void eliminateSubtours();
-	void compoundSubtours(Node *begin);
 	//
-	void adjustSolutions();
 
 	//
 	void checkTheSolution();
 
 	/*useful variables*/
 	Individual * off;
-	Individual * bestOff;
 	Individual * subPop;
 	read_data * data;
 	int numV;
@@ -83,12 +75,9 @@ private:
 	//variables for generating E-sets
 	std::vector<std:: set <int > >whichCycles;
 	std::vector<std:: set <int > >commconCycles;
-	Node6 *auxArray3;
-	std::set<int>auxArray4;
 
 	Node5 *eSets;
 	int nbeSets;
-	int *existCity;
 	//
 	Node *gStart;// variables for generating intermediate solutions
 	Node *gEnd;

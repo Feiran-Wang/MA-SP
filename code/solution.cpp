@@ -13,10 +13,11 @@
 #include <map>
 #include <stdexcept>
 #include <memory>
+#include <limits>
 using namespace std;
 
 void solution::recordHGA(Individual* candidate) {
-    if (!study || !candidate->isFeasible || candidate->fit == Max) return;
+    if (!study || !candidate->isFeasible || !std::isfinite(candidate->fit)) return;
     study->observe("hga_state_best", candidate, study->source);
     if (study->observe("reported_best", candidate, study->source)) popman->copyAllData(reportedBest, candidate);
 }
@@ -35,18 +36,18 @@ void solution::finishRun() {
         reportedBest->isRight();
         reportedBest->outputBestSolution();
     }
-    const bool opt = data->experimentTerminationReason == "verified_optimum";
+    const bool target = data->experimentTerminationReason == "target_reached";
     for (int counter : data->spSchedule) if (!reachedSPSchedule.count(counter)) {
         study->event("sp_opportunity", "\"call_id\":\"sp_" + std::to_string(counter)
             + "\",\"scheduled_counter\":" + std::to_string(counter)
-            + ",\"actual_counter\":null,\"event_status\":" + StudyEvents::quote(opt ? "not_reached_opt" : "not_reached_other")
-            + ",\"skip_reason\":" + StudyEvents::quote(opt ? "opt_before_trigger" : "termination_before_trigger")
+            + ",\"actual_counter\":null,\"event_status\":" + StudyEvents::quote(target ? "not_reached_target" : "not_reached_other")
+            + ",\"skip_reason\":" + StudyEvents::quote(target ? "target_before_trigger" : "termination_before_trigger")
             + ",\"nominal_time_limit_wall_seconds\":" + StudyEvents::number(data->spTimeLimit));
     }
     popman->finishStudyPopulations();
     const long long starts = spSolver ? spSolver->optimizerStarts : 0;
     const std::string zeroReason = starts ? "null" : StudyEvents::quote(data->experimentArm == "NoSP" ? "disabled"
-        : opt ? "opt_before_trigger" : sp_total_triggers ? "no_feasible_offspring_branch" : "no_trigger_reached");
+        : target ? "target_before_trigger" : sp_total_triggers ? "no_feasible_offspring_branch" : "no_trigger_reached");
     study->event("summary", "\"termination_reason\":" + StudyEvents::quote(data->experimentTerminationReason)
         + ",\"has_feasible_solution\":" + (feasible ? "true" : "false")
         + ",\"objective_exact\":" + (feasible ? StudyEvents::number(reportedBest->fit) : "null")
@@ -68,8 +69,7 @@ void solution::finishRun() {
         + ",\"sp_build_cpu_seconds\":" + StudyEvents::number(spSolver ? spSolver->modelBuildCPU : 0)
         + ",\"sp_optimization_cpu_seconds\":" + StudyEvents::number(spSolver ? spSolver->optimizationCPU : 0)
         + ",\"post_sp_ls_cpu_seconds\":" + StudyEvents::number(postSPCPU)
-        + ",\"new_population_cpu_seconds\":" + StudyEvents::number(newPopulationCPU)
-        + ",\"optimum_ack_wall_seconds\":" + StudyEvents::number(data->experimentOptAckWallSeconds));
+        + ",\"new_population_cpu_seconds\":" + StudyEvents::number(newPopulationCPU));
 }
 
 void solution::runSP() {
@@ -97,11 +97,12 @@ void solution::runSP() {
     try {
         study->source = "raw_SP";
         const auto combination = spSolver->solve(routePool, global);
-        if (combination.empty() && spSolver->lastTimeoutNoSolution) {
-            study->event("sp_completed", common + ",\"event_status\":\"timeout_no_solution\""
+        if (combination.empty() && (spSolver->lastTimeoutNoSolution || spSolver->lastBudgetExhausted)) {
+            const std::string reason = spSolver->lastBudgetExhausted ? "budget_exhausted_no_solve" : "timeout_no_solution";
+            study->event("sp_completed", common + ",\"event_status\":" + StudyEvents::quote(reason)
                 + ",\"raw_sp_objective\":null,\"raw_sp_validation_pass\":null"
                 + ",\"post_ls_objective\":null,\"post_ls_validation_pass\":null"
-                + ",\"post_ls_skipped_reason\":\"timeout_no_solution\",\"feedback_candidate_id\":null");
+                + ",\"post_ls_skipped_reason\":" + StudyEvents::quote(reason) + ",\"feedback_candidate_id\":null");
             study->source = "HGA";
             data->isolatedSPCPU += StudyEvents::cpu() - isolatedStarted;
             data->isolatedSPStarted = -1;
@@ -127,6 +128,9 @@ void solution::runSP() {
                 + ",\"raw_improved_reported_best\":" + (raw < before ? "true" : "false")
                 + ",\"post_ls_improved_reported_best\":null,\"feedback_candidate_id\":null");
             study->source = "HGA";
+            data->isolatedSPCPU += StudyEvents::cpu() - isolatedStarted;
+            data->isolatedSPStarted = -1;
+            study->candidateId.clear();
             return;
         }
         study->source = "post_SP_LS";
@@ -230,7 +234,7 @@ void solution::runSP() {
                 ++attempts;
                 ++study->physicalAttempts;
                 initialSol->initial_solution(temIndiv, newSlot);
-                if (data->hardTimeWindows && !temIndiv->isFeasible) continue;
+                if (!temIndiv->isFeasible) continue;
                 ls->local_search_run(temIndiv, data->penaltyDepot, data->penaltyVeh);
                 if (temIndiv->isFeasible) ++feasibleConstructed;
                 popman->addIndividual(temIndiv, newSlot, false, routePool);
@@ -272,69 +276,63 @@ void solution::runSP() {
         study->source = "HGA";
         study->candidateId.clear();
     } catch (...) {
+        if (data->isolatedSPStarted >= 0) {
+            data->isolatedSPCPU += StudyEvents::cpu() - data->isolatedSPStarted;
+            data->isolatedSPStarted = -1;
+        }
+        study->candidateId.clear();
         study->event("sp_error", common + ",\"event_status\":\"error\"");
         throw;
     }
 }
 
-solution::solution(read_data * data, crossover *cross, initial_sol *initialSol,LS *ls,  popManager *popman, RepairProcedure *repair,mutation *mutationOperator) {
-	this->data=data;
-	this->cross=cross;
-	this->initialSol=initialSol;
-	this->ls=ls;
-	this->popman=popman;
-	this->repair=repair;
-	this->mutationOperator=mutationOperator;
-	//
-	temIndiv=new Individual();
-	temIndiv->define(data);
-	global=new Individual ();
-	global->define(data);
-	global->initilization();
-	loc_best = new Individual();
-	loc_best->define(data);
-	loc_best->initilization();
-	bestIndivRestart=new Individual();
-	bestIndivRestart->define(data);
-	bestIndivRestart->initilization();
-
-	popman->global=global;
-	popman->bestIndivRestart = bestIndivRestart;
-	int sizeSubPop=100;//
-	subPop=new Individual[sizeSubPop];//
-	for (int i=0;i<sizeSubPop;i++){
-		subPop[i].define(data);
-		subPop[i].initilization();
-	}
-	global->fit=Max;
-	bestIndivRestart->fit=Max;
-
-	// === 实例化 Matheuristic 组件 ===
-    this->routePool = new RoutePool(data);
-    this->spSolver = data->experimentMode && data->experimentArm == "NoSP" ? nullptr : new SPSolver(data);
+solution::solution(read_data* data, crossover* cross, initial_sol* initialSol, LS* ls,
+                   popManager* popman, RepairProcedure* repair, mutation* mutationOperator)
+    : data(data), initialSol(initialSol), ls(ls), cross(cross), popman(popman),
+      repair(repair), mutationOperator(mutationOperator) {
+    auto individual = [&]() {
+        std::unique_ptr<Individual> value(new Individual());
+        value->define(data);
+        value->initilization();
+        return value;
+    };
+    auto temporary = individual();
+    auto globalBest = individual();
+    auto localBest = individual();
+    auto restartBest = individual();
+    globalBest->fit = restartBest->fit = std::numeric_limits<double>::infinity();
+    std::unique_ptr<Individual[]> offspring(new Individual[100]);
+    for (int i = 0; i < 100; ++i) { offspring[i].define(data); offspring[i].initilization(); }
+    std::unique_ptr<RoutePool> pool(new RoutePool(data));
+    std::unique_ptr<SPSolver> solver(data->experimentMode && data->experimentArm == "NoSP"
+        ? nullptr : new SPSolver(data));
+    std::unique_ptr<StudyEvents> events;
+    std::unique_ptr<Individual> reported;
+    std::unique_ptr<LS> isolatedLS;
+    std::function<void(Individual*)> callback;
     if (data->experimentMode) {
-        study = new StudyEvents(data);
-        popman->study = study;
-        popman->studyIncumbent = [this](Individual* candidate) { recordHGA(candidate); };
-        if (spSolver) spSolver->study = study;
-        reportedBest = new Individual();
-        reportedBest->define(data);
-        reportedBest->initilization();
-        reportedBest->fit = Max;
+        events.reset(new StudyEvents(data));
+        reported = individual();
+        reported->fit = std::numeric_limits<double>::infinity();
+        callback = [this](Individual* candidate) { recordHGA(candidate); };
         if (data->experimentArm == "OneWaySP") {
-            // Independent LS/repair objects keep all object-local caches and
-            // move decisions outside the HGA objects used by the main search.
-            sideRepair = new RepairProcedure(data, popman);
-            sideLS = new LS(data, sideRepair);
+            isolatedLS.reset(new LS(data));
             sideRng = global_rng;
         }
     }
+    temIndiv = temporary.release(); global = globalBest.release(); loc_best = localBest.release();
+    bestIndivRestart = restartBest.release(); subPop = offspring.release();
+    routePool = pool.release(); spSolver = solver.release();
+    study = events.release(); reportedBest = reported.release(); sideLS = isolatedLS.release();
+    popman->global = global; popman->bestIndivRestart = bestIndivRestart;
+    popman->study = study;
+    popman->studyIncumbent.swap(callback);
+    if (spSolver) spSolver->study = study;
 }
 solution::~solution(){
 	popman->study = nullptr;
 	popman->studyIncumbent = nullptr;
 	delete sideLS;
-	delete sideRepair;
 	delete reportedBest;
 	delete study;
 	delete temIndiv;
@@ -416,15 +414,16 @@ void solution::preprocessingLocationConfiguration(){
 	}
 
 	std::vector<std::pair<double, int>>averageCost;
-	double avgCost,bestCost = Max;
-	double global_cost = Max;
+	double bestCost = std::numeric_limits<double>::infinity();
+	double global_cost = std::numeric_limits<double>::infinity();
 	for (int i = 0; i<initalNumDepots;i++){// an extra subPop
-		avgCost = 0;bestCost = Max;
+        bestCost = std::numeric_limits<double>::infinity();
 		for (int j = 0; j < data->configurationSamples; j++){
+            if (data->stopCondition(global_cost)) break;
             if (study) ++study->physicalAttempts;
 			initialSol->initial_solution(temIndiv, i);
+            if (!temIndiv->isFeasible) continue;
 			ls->local_search_run(temIndiv,data->penaltyDepot, data->penaltyVeh);
-			avgCost += temIndiv->fit;
 			if (bestCost > temIndiv->fit)
 				bestCost = temIndiv->fit;
 			if (temIndiv->fit < global_cost){
@@ -434,35 +433,35 @@ void solution::preprocessingLocationConfiguration(){
 				popman->copyAllData(loc_best, temIndiv);// record the best solution given the current depot configuration.
 			}
 		}
-		avgCost = avgCost / (double)(data->popMin);// in this place, we use the best solution
-	//	averageCost.push_back({avgCost, i});
-		averageCost.push_back({bestCost, i});
+        if (std::isfinite(bestCost)) averageCost.push_back({bestCost, i});
 		std::cout<<i<<"   tries   "<< bestCost<<std::endl;
+        if (data->stopCondition(global_cost)) break;
 
 //		loc_best->evaluationDis();
 	}
+    if (averageCost.empty()) throw std::runtime_error("initial screening found no feasible solution within its budget");
 	std::sort(averageCost.begin(), averageCost.end());
 	loc_best->evaluationDis();
 
 	//
 	data->numLocConfiguration = data->maxActiveConfigurations;
 	data->compactLocConfigure.clear();
-	for (int i=0;i < std::min(data->numLocConfiguration,initalNumDepots); i++)
+	for (int i=0;i < std::min(data->numLocConfiguration, static_cast<int>(averageCost.size())); i++)
 		data->compactLocConfigure.push_back(data->LocConfigure[averageCost[i].second].second);
-	data->numLocConfiguration = std::min(data->numLocConfiguration,initalNumDepots);
+	data->numLocConfiguration = std::min(data->numLocConfiguration, static_cast<int>(averageCost.size()));
 	// add the best solution of each depot configuration in the elite subpop.
 //	loc_best->outputBestSolution();
 	popman->addIndividual(loc_best, data->numLocConfiguration, true);// insert the local best solution to elite pop
 	std::cout<<"Finishing initial filter"<<std::endl;
 }
 void solution::generation_population(int rankPop, bool isInitial){
-	double bestFit=Max;
+	double bestFit=std::numeric_limits<double>::infinity();
 	/*generate a feasible population set*/
 	for (int i = 0; i < data->popMin * data->initialPopulationMultiplier; i++){
-		if (data->hardTimeWindows && stopRequested()) break;
+		if (stopRequested()) break;
 		if (study) ++study->physicalAttempts;
 		initialSol->initial_solution(temIndiv, rankPop);
-		if (data->hardTimeWindows && !temIndiv->isFeasible) continue;
+		if (!temIndiv->isFeasible) continue;
 		ls->local_search_run(temIndiv,data->penaltyDepot, data->penaltyVeh);
 		popman->addIndividual(temIndiv, rankPop, isInitial, this->routePool);
 		if (bestFit>temIndiv->fit)
@@ -493,7 +492,7 @@ void solution::getAverageValue(int rank){
         avgCostPop.assign(data->numLocConfiguration + 1, Max);
         for (int p = 0; p <= data->numLocConfiguration; ++p) {
             if (popman->popula[p].empty()) continue;
-            double sum = 0;
+            long double sum = 0;
             for (const Individual* item : popman->popula[p]) sum += item->fit;
             avgCostPop[p] = sum / popman->popula[p].size();
         }
@@ -502,13 +501,13 @@ void solution::getAverageValue(int rank){
 	if (rank < 0){
 		avgCostPop.clear();
 		for (int i=0;i<data->numLocConfiguration + 1; i++){
-			double cost = 0;
+			long double cost = 0;
 			for (int j=0;j<(int)popman->popula[i].size();j++){
 				cost += popman->popula[i][j]->fit;
 			}
 			int ss = popman->popula[i].size();
 		//	avgCostPop.push_back(cost);
-			avgCostPop.push_back(cost / (double)ss);
+			avgCostPop.push_back(ss ? cost / (double)ss : std::numeric_limits<double>::infinity());
 		}
 		//cut some pop whose obj is too worse.
 /*		double min_avg = Max;
@@ -552,11 +551,11 @@ void solution::getAverageValue(int rank){
 		}
 	}
 	else{
-		double cost = 0;
+		long double cost = 0;
 		for (int j=0;j<(int)popman->popula[rank].size();j++)
 			cost += popman->popula[rank][j]->fit;
 		int ss = popman->popula[rank].size();
-		avgCostPop[rank] = cost / (double)ss;
+		avgCostPop[rank] = ss ? cost / (double)ss : std::numeric_limits<double>::infinity();
 	//	avgCostPop[rank] = cost;
 	}
 	// removing half population
@@ -615,7 +614,7 @@ int solution::selectsubPop(int subpop1){
     return target;
 }
 void solution::evolvePop(int rankPop, int &count){
-    if (data->hardTimeWindows && stopRequested()) {
+    if (stopRequested()) {
         count = data->maxIterationPerLoc; return;
     }
 	if ((int)popman->popula[rankPop].size() <= 2){
@@ -627,9 +626,9 @@ void solution::evolvePop(int rankPop, int &count){
 	fa = popman->selectionParentSolution(ma, rankPop);
 	ma = popman->selectionParentSolution(fa, rankPop);
 	cross->gEAX(fa,ma,subPop,sizeSubPop);
-    if (data->hardTimeWindows && sizeSubPop == 0) { ++count; if (study) ++study->physicalAttempts; }
+    if (sizeSubPop == 0) { ++count; if (study) ++study->physicalAttempts; }
 	for (int i =0; i<sizeSubPop; i++){
-		if (study && stopRequested()) break;
+		if (stopRequested()) break;
 		if (study) ++study->physicalAttempts;
 		repair->repairCapacityConstraint(subPop+i, data->penaltyDepot, data->penaltyVeh);
 		if (subPop[i].isFeasible){
@@ -653,13 +652,14 @@ void solution::initialPop(){
 	popman->popula.erase(popman->popula.begin()+data->numLocConfiguration +1, popman->popula.end());
 	int i;
 	for ( i = 0; i<data->numLocConfiguration +1 ;i++){// an extra subPop
+        if (stopRequested()) break;
 		std::cout<<i<<" th ";
 		std::cout<<(double)clock()/(double)CLOCKS_PER_SEC<<std::endl;
 		generation_population(i, true);
 		int count = 0;
 		if ((int)popman->popula[i].size() <= 1)
 			continue;
-		while (count < data->maxIterationPerLoc)
+		while (count < data->maxIterationPerLoc && !stopRequested())
 			evolvePop(i, count);
 	}
 	std::cout<<"Finishing constructing number of initial population"<<std::endl;
@@ -676,13 +676,13 @@ void solution::main_loop(){
 		initializationCPU = StudyEvents::cpu() - initializeStarted;
 		finishRun(); return;
 	}
-	int sizeSubPop;
+	int sizeSubPop = 0;
 	data->loopp = 0;
 	data->nbIterNonImpro=1;
 	int subPop1, subPop2;
 	initialPop();
 	initializationCPU = StudyEvents::cpu() - initializeStarted;
-	if (study && stopRequested()) { finishRun(); return; }
+	if (stopRequested()) { finishRun(); return; }
 
 	// 【新增】：初始化之后，迭代开始之前，全员注入路径池建立均值基线
 	std::cout << "[RoutePool] 正在建立初始精英池基线..." << std::endl;
@@ -705,17 +705,19 @@ void solution::main_loop(){
 	long long int var1, var2, var;
 	int whichSubPop;
 	if (study) study->source = "HGA";
+    bool reducedHalf = false, reducedThreeQuarters = false;
 	while(1){
-        if (data->hardTimeWindows && stopRequested()) {
+        if (stopRequested()) {
             finishRun(); return;
         }
 		// phase 2: to crossover individuals from different subpopulation;
 		subPop1 = selectsubPop(-1);
 		subPop2 = selectsubPop(subPop1);
+        if (subPop1 < 0 || subPop2 < 0) throw std::runtime_error("search has no nonempty population");
 		ma = NULL;
 		fa = popman->selectionParentSolution(ma, subPop1);
 		ma = popman->selectionParentSolution(fa, subPop2);
-        if (data->hardTimeWindows) sizeSubPop = 0;
+        sizeSubPop = 0;
 		cross->gEAX(fa,ma,subPop,sizeSubPop);
         if (data->hardTimeWindows && sizeSubPop == 0) {
             // A failed/empty EAX proposal must not reuse stale offspring. The
@@ -724,7 +726,7 @@ void solution::main_loop(){
             sizeSubPop = 1;
         }
 		for (int i =0; i<sizeSubPop; i++){
-			if (study && stopRequested()) { finishRun(); return; }
+			if (stopRequested()) { finishRun(); return; }
 			if (study) ++study->physicalAttempts;
 			repair->repairCapacityConstraint(subPop+i, data->penaltyDepot, data->penaltyVeh);
 			if (subPop[i].isFeasible){
@@ -766,10 +768,10 @@ void solution::main_loop(){
 						int twFillAttempts = 0;
                             while ((int)popman->popula[isGenerateNewSubPop].size() < data->popMin &&
                                    (!data->hardTimeWindows || (++twFillAttempts <= data->popMin && !stopRequested())) &&
-                                   (!data->experimentMode || data->hardTimeWindows || !stopRequested())) {
+                                   !stopRequested()) {
 							if (study) ++study->physicalAttempts;
 							initialSol->initial_solution(temIndiv, isGenerateNewSubPop);
-                                if (data->hardTimeWindows && !temIndiv->isFeasible) continue;
+                                if (!temIndiv->isFeasible) continue;
 							ls->local_search_run(temIndiv, data->penaltyDepot, data->penaltyVeh);
 							popman->addIndividual(temIndiv, isGenerateNewSubPop, false, this->routePool);
 						}
@@ -833,21 +835,21 @@ void solution::main_loop(){
 						this->sp_found_solutions++;
 						std::cout << "[SP Success] Gurobi found a valid configuration! (Total found: " << this->sp_found_solutions << ")" << std::endl;
 
-						Individual* spIndiv = new Individual();
+						std::unique_ptr<Individual> spIndiv(new Individual());
 						spIndiv->define(this->data);
 						spIndiv->rebuildFromSP(optimalCombination);
 						const double rawSPObjective = spIndiv->fit;
 						const auto spLSStarted = std::chrono::steady_clock::now();
 
 						// 【新增】：对 Gurobi 拼装出的解进行一次 LS 打磨，避免虚高
-						this->ls->local_search_run(spIndiv, data->penaltyDepot, data->penaltyVeh);
+						this->ls->local_search_run(spIndiv.get(), data->penaltyDepot, data->penaltyVeh);
 						const double postLSObjective = spIndiv->fit;
 						const double spLSWall = std::chrono::duration<double>(std::chrono::steady_clock::now() - spLSStarted).count();
 
 						this->sp_injection_attempts++;
 
 						// 【修改】：接收返回值，判断是否开辟了新种群，并传入 pool 用于均值记录
-						int spNewPopIdx = this->popman->injectSPSolution(spIndiv, this->routePool);
+						int spNewPopIdx = this->popman->injectSPSolution(spIndiv.release(), this->routePool);
 						std::ostringstream injectionEvent;
 						injectionEvent << std::setprecision(17) << "[SP INJECTION] iteration=" << data->iteration
 						               << " global_before=" << globalBeforeSP << " raw_objective=" << rawSPObjective
@@ -862,9 +864,9 @@ void solution::main_loop(){
 							// 【修改3B：SP种群成功接管后，快速精准扩充到 popMin】
 							int twFillAttempts = 0;
                             while ((int)popman->popula[spNewPopIdx].size() < data->popMin &&
-                                   (!data->hardTimeWindows || (++twFillAttempts <= data->popMin && !data->stopCondition(global->fit)))) {
+                                   (!data->hardTimeWindows || ++twFillAttempts <= data->popMin) && !stopRequested()) {
 								initialSol->initial_solution(temIndiv, spNewPopIdx);
-                                if (data->hardTimeWindows && !temIndiv->isFeasible) continue;
+                                if (!temIndiv->isFeasible) continue;
 								ls->local_search_run(temIndiv, data->penaltyDepot, data->penaltyVeh);
 								popman->addIndividual(temIndiv, spNewPopIdx, false, this->routePool);
 							}
@@ -928,11 +930,15 @@ void solution::main_loop(){
                 }
             }
 			///////////////////
-			if (!data->hardTimeWindows && data->iteration == data->iterLimit/2)
+			if (!data->hardTimeWindows && !reducedHalf && data->iteration == data->iterLimit/2) {
+                reducedHalf = true;
 				popman->reduceHalfSubPop();
+            }
 
-			if (!data->hardTimeWindows && data->iteration == data->iterLimit * 0.75)
+			if (!data->hardTimeWindows && !reducedThreeQuarters && data->iteration == data->iterLimit * 0.75) {
+                reducedThreeQuarters = true;
 				popman->reduceHalfSubPop();
+            }
 
 			/////////
 			if (stopRequested()){

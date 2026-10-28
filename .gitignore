@@ -5,9 +5,12 @@ logs/
 solutions/
 *.log
 study_events.jsonl
-optimum_candidate.txt
-optimum.accepted
-optimum.rejected
+sp_start_*.txt
+sp_candidate_*.txt
+sp_result_*.txt
+sp_result_*_raw.tsv
+sp_post_ls_*.txt
+build-checks/
 
 # Compiler artifacts
 *.o

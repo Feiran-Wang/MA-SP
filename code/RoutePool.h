@@ -49,9 +49,6 @@ public:
     // 获取当前池中所有的不重复路径
     const std::vector<StandaloneRoute>& getPool() const { return poolList; }
 
-    // 打印池的状态信息
-    void printStatus() const;
-
     // 更新统计信息和获取平均值的接口
     void recordSolutionFitness(double fitness) {
         totalFitnessSum += fitness;

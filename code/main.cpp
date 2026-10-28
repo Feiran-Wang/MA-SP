@@ -7,14 +7,19 @@
 #include"basic.h"
 #include"commandline.h"
 #include"solution.h"
+#include <memory>
 
 std::mt19937 global_rng;
 
 int main(int argc, char*argv[]){
 	try {
+	if (argc == 2 && (std::string(argv[1]) == "--help" || std::string(argv[1]) == "-h")) {
+		std::cout << CommandLine::usage() << std::endl;
+		return 0;
+	}
 	CommandLine comLin(argc,argv);
 	global_rng.seed(comLin.seed);
-	read_data *data=new read_data();
+	std::unique_ptr<read_data> data(new read_data());
 	data->read_fun(comLin.pathInstance, comLin.pathDepotCon, comLin.pathSolution, comLin.bestDis, comLin.isOptimal, comLin.timeLimit,comLin.iterLimit);
 	data->startTime=clock();
 	if (data->hardTimeWindows || data->experimentMode) {
@@ -59,7 +64,6 @@ int main(int argc, char*argv[]){
 		          << " effective_shaw_removal_count=" << data->requestedShawRemovalCount
 		          << " mutation_comparison=draw_ge_threshold mutation_threshold=" << data->mutationProb
 		          << (data->hardTimeWindows ? " opt_match=exact_integer" : " opt_match=exact_native_objective")
-		          << " opt_ack_timeout_wall_seconds=300 opt_ack_poll_ms=10"
 		          << " main_counter_limit=" << data->iterLimit << " main_counter_comparison=gt"
 		          << " process_cpu_safety_limit=" << data->timeLimit << " sp_schedule=";
 		for (std::size_t i = 0; i < data->spSchedule.size(); ++i)
@@ -68,13 +72,14 @@ int main(int argc, char*argv[]){
 	}
 	/***********************/
 
-	popManager *popman=new popManager(data);
-	crossover *cross=new crossover (data,popman);
-	RepairProcedure *repair=new RepairProcedure(data, popman);
-	LS * ls=new LS(data, repair);// local search phase
-	initial_sol *initialSol=new initial_sol (data, repair);
-	mutation *mutationOperator=new mutation(data);
-	solution *solver=new solution(data,cross,initialSol,ls,popman,repair,mutationOperator);
+	std::unique_ptr<popManager> popman(new popManager(data.get()));
+	std::unique_ptr<crossover> cross(new crossover(data.get(), popman.get()));
+	std::unique_ptr<RepairProcedure> repair(new RepairProcedure(data.get(), popman.get()));
+	std::unique_ptr<LS> ls(new LS(data.get()));
+	std::unique_ptr<initial_sol> initialSol(new initial_sol(data.get(), repair.get()));
+	std::unique_ptr<mutation> mutationOperator(new mutation(data.get()));
+	std::unique_ptr<solution> solver(new solution(data.get(), cross.get(), initialSol.get(), ls.get(),
+	                                            popman.get(), repair.get(), mutationOperator.get()));
 	//
 	solver->main_loop();
 	if (data->experimentMode && data->hardTimeWindows) {
@@ -91,8 +96,6 @@ int main(int argc, char*argv[]){
 		          << " mutation_calls=" << data->twMutationCalls
 		          << " mutation_removed_customers=" << data->twMutationRemovedCustomers
 		          << " tw_repair_failures=" << data->twRepairFailures
-		          << " opt_independently_accepted=" << data->experimentOptimumAccepted
-		          << " opt_ack_wall_seconds=" << data->experimentOptAckWallSeconds
 		          << " termination_reason=" << data->experimentTerminationReason << std::endl;
 	}
     if (data->experimentMode && !data->hardTimeWindows) {
@@ -108,20 +111,13 @@ int main(int argc, char*argv[]){
                   << " neighborhood_max=" << maximum
                   << " mutation_calls=" << data->setSMutationCalls
                   << " mutation_removed_customers=" << data->setSMutationRemovedCustomers
-                  << " opt_independently_accepted=" << data->experimentOptimumAccepted
-                  << " opt_ack_wall_seconds=" << data->experimentOptAckWallSeconds
                   << " termination_reason=" << data->experimentTerminationReason << std::endl;
     }
 	/*************************************************/
-	delete solver;
-	delete repair;
-	delete cross;
-	delete popman;
-	delete mutationOperator;
-	delete ls;
-	delete initialSol;
-	delete data;
 	return 0;
+	} catch (GRBException& error) {
+		std::cerr << "Gurobi error: " << error.getMessage() << std::endl;
+		return 1;
 	} catch (const std::exception& error) {
 		std::cerr << "Error: " << error.what() << std::endl;
 		return 1;

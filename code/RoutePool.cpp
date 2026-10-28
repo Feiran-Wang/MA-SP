@@ -94,10 +94,3 @@ void RoutePool::prunePool() {
 
     std::cout << "[RoutePool] Pruning complete. New size: " << poolList.size() << std::endl;
 }
-
-void RoutePool::printStatus() const {
-    std::cout << "--- Route Pool Status ---" << std::endl;
-    std::cout << "Unique Routes Count: " << uniqueRoutes.size() << std::endl;
-    std::cout << "Vector Size:         " << poolList.size() << std::endl;
-    std::cout << "-------------------------" << std::endl;
-}

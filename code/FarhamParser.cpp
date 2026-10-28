@@ -22,6 +22,32 @@ void width(const std::vector<double>& row, std::size_t expected,
     if (row.size() != expected)
         invalid(path, section + " must have " + std::to_string(expected) + " fields");
 }
+class TimeSum {
+    std::vector<double> terms;
+public:
+    bool add(double value) {
+        std::vector<double> next;
+        for (double term : terms) {
+            const double sum = term + value;
+            if (!std::isfinite(sum)) return false;
+            const double recovered = sum - term;
+            const double error = (term - (sum - recovered)) + (value - recovered);
+            if (error != 0) next.push_back(error);
+            value = sum;
+        }
+        if (value != 0 || next.empty()) next.push_back(value);
+        terms.swap(next);
+        return true;
+    }
+    int compare(double value, double tolerance = 0) const {
+        TimeSum difference = *this;
+        if (!difference.add(-value) || !difference.add(-tolerance)) return 1;
+        for (auto i = difference.terms.rbegin(); i != difference.terms.rend(); ++i)
+            if (*i != 0) return *i > 0 ? 1 : -1;
+        return 0;
+    }
+    void reset(double value) { terms.assign(1, value); }
+};
 } // namespace
 
 void read_data::readFarham(const std::string& path) {
@@ -39,12 +65,16 @@ void read_data::readFarham(const std::string& path) {
         if (first == std::string::npos || line[first] == '#') continue;
         std::istringstream stream(line);
         std::vector<double> row;
-        double value;
-        while (stream >> value) {
-            if (!std::isfinite(value)) invalid(path, "non-finite number on line " + std::to_string(lineNumber));
+        std::string token;
+        while (stream >> token) {
+            std::size_t consumed = 0;
+            double value;
+            try { value = std::stod(token, &consumed); }
+            catch (const std::exception&) { invalid(path, "invalid number on line " + std::to_string(lineNumber)); }
+            if (consumed != token.size() || !std::isfinite(value))
+                invalid(path, "invalid number on line " + std::to_string(lineNumber));
             row.push_back(value);
         }
-        if (!stream.eof()) invalid(path, "non-numeric token on line " + std::to_string(lineNumber));
         if (!row.empty()) rows.push_back(std::move(row));
     }
     if (input.bad()) invalid(path, "read failure");
@@ -55,7 +85,7 @@ void read_data::readFarham(const std::string& path) {
         invalid(path, "NUM_CDC must be zero for single-echelon LRPTW");
     const int depots = integer(rows[0][1], path, "NUM_SATELLITE");
     const int customers = integer(rows[0][2], path, "NUM_CUSTOMER");
-    if (depots <= 0 || customers <= 0 ||
+    if (depots <= 0 || depots > 62 || customers <= 0 ||
         customers > std::numeric_limits<int>::max() - depots ||
         customers > std::numeric_limits<int>::max() / depots)
         invalid(path, "invalid or oversized depot/customer counts");
@@ -135,15 +165,14 @@ void read_data::readFarham(const std::string& path) {
 bool read_data::routeTimeFeasible(int depotIndex, const std::vector<int>& sequence) const {
     if (!hardTimeWindows) return true;
     if (depotIndex < 0 || depotIndex >= numL) return false;
-    double time = 0.0;
+    TimeSum time;
     int previous = numV + depotIndex;
     for (int customer : sequence) {
         if (customer < 0 || customer >= numV) return false;
-        time = std::max(time + D[previous][customer], readyTime[customer]);
-        if (!std::isfinite(time) || time > dueTime[customer] + 1e-9) return false;
-        time += serviceTime[customer];
+        if (!time.add(D[previous][customer])) return false;
+        if (time.compare(readyTime[customer]) < 0) time.reset(readyTime[customer]);
+        if (time.compare(dueTime[customer], 1e-9) > 0 || !time.add(serviceTime[customer])) return false;
         previous = customer;
     }
-    time += D[previous][numV + depotIndex];
-    return std::isfinite(time) && time <= depotCloseTime[depotIndex] + 1e-9;
+    return time.add(D[previous][numV + depotIndex]) && time.compare(depotCloseTime[depotIndex], 1e-9) <= 0;
 }

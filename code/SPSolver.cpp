@@ -248,12 +248,29 @@ SPSolver::~SPSolver() {
 
 std::vector<StandaloneRoute> SPSolver::solve(const RoutePool* pool, const Individual* incumbent) {
     lastTimeoutNoSolution = false;
+    lastBudgetExhausted = false;
     std::vector<StandaloneRoute> optimalCombination;
     if (this->env == nullptr || pool == nullptr) {
         throw std::runtime_error("SP requires a valid solver environment and route pool");
     }
 
     try {
+        // Match read_data::stopCondition: the safety limit covers absolute
+        // process CPU, including OneWaySP, rather than evolution-only CPU.
+        const auto remainingBudget = [this]() {
+            return std::min(experimentRemaining(), data->timeLimit
+                - static_cast<double>(clock()) / CLOCKS_PER_SEC);
+        };
+        const auto noSolveBudget = [this](double buildCPU) {
+            lastBudgetExhausted = true;
+            if (study) study->event("sp_budget_exhausted_no_solve", "\"call_id\":\"sp_"
+                + std::to_string(data->iteration)
+                + "\",\"event_status\":\"not_started\",\"solver_status\":null,\"solution_count\":0"
+                + ",\"start_accepted\":false,\"model_build_cpu_seconds\":" + StudyEvents::number(buildCPU)
+                + ",\"sp_process_cpu_seconds\":0,\"effective_time_limit_wall_seconds\":0");
+            return std::vector<StandaloneRoute>();
+        };
+        if (remainingBudget() <= 0) return noSolveBudget(0);
         const auto started = WallClock::now();
         const clock_t cpuStarted = clock();
         std::vector<int> startOpened;
@@ -356,21 +373,8 @@ std::vector<StandaloneRoute> SPSolver::solve(const RoutePool* pool, const Indivi
             model.addConstr(depotRouteCount[l] <= maxVisit * y[l], "MaxVeh_" + std::to_string(l));
         }
 
-        // The selected family profile resolves the size-dependent limit once.
-        double dynamicTimeLimit = data->spTimeLimit;
-        dynamicTimeLimit = std::min(dynamicTimeLimit, std::max(0.001, experimentRemaining()));
-
-        if (data->hardTimeWindows) {
-            dynamicTimeLimit = std::min(dynamicTimeLimit,
-                std::max(0.001, data->timeLimit - static_cast<double>(clock()) / CLOCKS_PER_SEC));
-        }
-
-        // Report the effective limit after the Set F remaining-budget clamp.
-        std::cout << "[SPSolver] profile=" << data->parameterProfile << " 客户数 " << data->numV
-                  << " -> 分配 Gurobi 求解上限时间: " << dynamicTimeLimit << "s" << std::endl;
         // ==========================================
         // 求解器参数设置
-        model.set(GRB_DoubleParam_TimeLimit, dynamicTimeLimit);
         model.set(GRB_DoubleParam_MIPGap, data->spMIPGap);
         model.set(GRB_IntParam_Threads, data->spThreads); // 严格限制 Gurobi 实例占用的物理线程数
         if (data->experimentMode) model.set(GRB_IntParam_Seed, 0);
@@ -394,6 +398,18 @@ std::vector<StandaloneRoute> SPSolver::solve(const RoutePool* pool, const Indivi
                    << " validated=1 complete=1";
         std::cout << startEvent.str() << std::endl;
         if (data->experimentMode) model.update();
+        // Preparation also consumes the process budget. Never manufacture a
+        // positive minimum solve allowance after either budget has expired.
+        const double remaining = remainingBudget();
+        if (remaining <= 0) {
+            const double buildCPU = StudyEvents::cpu() - static_cast<double>(cpuStarted) / CLOCKS_PER_SEC;
+            modelBuildCPU += buildCPU;
+            return noSolveBudget(buildCPU);
+        }
+        const double dynamicTimeLimit = std::min(data->spTimeLimit, remaining);
+        model.set(GRB_DoubleParam_TimeLimit, dynamicTimeLimit);
+        std::cout << "[SPSolver] profile=" << data->parameterProfile << " 客户数 " << data->numV
+                  << " -> 分配 Gurobi 求解上限时间: " << dynamicTimeLimit << "s" << std::endl;
         const auto optimizeStarted = WallClock::now();
         const double optimizeCPUStarted = StudyEvents::cpu();
         const double buildCPU = optimizeCPUStarted - static_cast<double>(cpuStarted) / CLOCKS_PER_SEC;

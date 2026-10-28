@@ -1,6 +1,7 @@
 #include "TimeWindowOperators.h"
 #include "Individual.h"
 #include "RoutePool.h"
+#include <stdexcept>
 
 Individual::Individual() {
 }
@@ -40,10 +41,6 @@ void Individual::define(read_data *data){
 		location[i].inventory = data->invLoc[i+numV];
 		location[i].remainInven = 0;
 		location[i].splitTime = 0;
-		int numOfVeh;
-	//	if (data->totalDemand < location[i].inventory){
-			numOfVeh =ceil(1.2*data->totalDemand/data->vehCap)+5;
-	//	}
 		if (location[i].inventory > data->totalDemand) location[i].iscapCon = false;// to decide the constraint in locations
 		else location[i].iscapCon = true;
 		location[i].maxVisit = data->safeRouteLimit(i);
@@ -79,6 +76,7 @@ void Individual::define(read_data *data){
 		route[i].dis=0;
 		route[i].load=0;
 		route[i].nbClients=0;
+		route[i].whenLastModified=-1;
 		route[i].penalty=0;
 	}
 	int rankRoute=0;
@@ -95,8 +93,6 @@ void Individual::define(read_data *data){
 	checkArray = new int [numV];
 }
 void Individual::initilization(){
-	saturatLoc.clear();
-	saturatRoute.clear();
 	for (int i=0;i<numV;i++){
 		client[i].pre=NULL;
 		client[i].next=NULL;
@@ -176,23 +172,6 @@ void Individual::evaluationDis(){
 
 	data->probFixedCost = totalLoc / fit;
 }
-void Individual::getSaturationDegree(){
-	saturatLoc.clear();
-	saturatRoute.clear();
-	for (int i=0;i<numL;i++){
-		if (location[i].used){
-			if (!data->isConstraintLoc)/////////////////////////the other cases and considered in other places
-				saturatLoc.insert({double(location[i].remainInven) / double(location[i].inventory), i});
-			for (int j=0;j<location[i].maxVisit;j++){
-				if (location[i].depots[j].route->used){
-					saturatRoute.insert({double(location[i].depots[j].route->load) / double(data->vehCap), location[i].depots[j].route->cour});
-				}
-			}
-		}
-	}
-}
-
-
 void Individual::updateRouteInfor(int &r, int nbMoves){
 	Node *mynode=route[r].depot;
 	mynode->cumulatedLoad=0;
@@ -209,8 +188,8 @@ void Individual::updateRouteInfor(int &r, int nbMoves){
 	}
 	route[r].dis=mynode->cumulatedDis + data->D[mynode->cour][mynode->next->cour];
 	route[r].load=mynode->cumulatedLoad;
-	route[r].nbClients=mynode->position;
-	if (data->hardTimeWindows) route[r].nbClients = mynode->position - 1;
+	// The final depot has a position too; it is not a customer in either family.
+	route[r].nbClients=mynode->position - 1;
 
 //		NodeDepot *loc = route[r].whichLocation;// update the location inventory
 //		loc->remainInven=0;
@@ -224,9 +203,13 @@ void Individual::updateRouteInfor(int &r, int nbMoves){
 }
 void Individual:: updateLocationInfor(int &ll){
 	int l = ll - numV;
+	const int previousLoad = location[l].remainInven;
+	const int previousRoutes = location[l].splitTime;
+	int latestChange = -1;
 	location[l].splitTime = 0;
 	location[l].remainInven = 0;
 	for (int i=0; i<location[l].maxVisit; i++){
+		latestChange = std::max(latestChange, location[l].depots[i].route->whenLastModified);
 		if (data->hardTimeWindows ? !location[l].depots[i].next->isDepot : location[l].depots[i].route->load > 0){
 			location[l].remainInven += location[l].depots[i].route->load;
 			location[l].depots[i].route->used = true;
@@ -240,6 +223,12 @@ void Individual:: updateLocationInfor(int &ll){
 		location[l].splitTime=0;
 	}
 	else location[l].used = true;
+	// Move eligibility and opening costs depend on the whole depot, including
+	// routes whose customer sequence did not change in the latest move.
+	if (previousLoad != location[l].remainInven || previousRoutes != location[l].splitTime) {
+		for (int i = 0; i < location[l].maxVisit; ++i)
+			location[l].depots[i].route->whenLastModified = latestChange;
+	}
 }
 void Individual::outputSolution(){
 	std::cout<<"------------------------------------The solution display is as follows-------------------------------------------"<<std::endl;
@@ -365,11 +354,17 @@ void Individual::writeStudyWitness(const std::string& path) const {
 void Individual::outputBestSolution(){
 	if (data->hardTimeWindows) isRight();
 	std::cout<<"----------Write Solution With Value  "<<fit<<" In: "<<data->pathSolution<<std::endl;
-	std::ofstream myfile(data->pathSolution);
+	std::ofstream myfile;
 	myfile.exceptions(std::ios::failbit | std::ios::badbit);
-	if (data->experimentMode && !data->hardTimeWindows) myfile << std::setprecision(17)
+	try {
+		myfile.open(data->pathSolution);
+	} catch (const std::ios_base::failure&) {
+		throw std::runtime_error("Cannot open solution output: " + data->pathSolution);
+	}
+	myfile << std::setprecision(17);
+	if (data->experimentMode && !data->hardTimeWindows) myfile
         << "# MA-SP Set S study; native instance metric; internal zero-based IDs\n";
-	if (data->hardTimeWindows) myfile << std::setprecision(17)
+	if (data->hardTimeWindows) myfile
 		<< "# MA-SP Set F; hard windows; floor-euclidean cost/time; internal zero-based IDs\n";
 	//double Distance=0;
 	if (myfile.is_open()){
