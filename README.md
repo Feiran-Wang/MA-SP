@@ -71,20 +71,6 @@ unsupported input is rejected with a nonzero exit status.
 The set-partitioning stage optimizes the retained route pool; `OPTIMAL` denotes
 the pool model's optimum.
 
-## Explicit regression checks
-
-Checks are disabled in a normal build. They exercise input parsing, crossover
-boundaries, route state, and population state without launching an optimization
-study:
-
-```bash
-cmake -S . -B build-checks -DCMAKE_BUILD_TYPE=Release -DMASP_BUILD_CHECKS=ON \
-  -DGUROBI_ROOT=/opt/gurobi1302/linux64
-cmake --build build-checks --parallel 2
-ctest --test-dir build-checks --output-on-failure
-```
-
 ## License
 
-MIT License; see [LICENSE](LICENSE). Maintainer: Feiran Wang. Original source
-author credits are retained.
+MIT License; see [LICENSE](LICENSE). Author: Feiran.

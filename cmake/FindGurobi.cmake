@@ -1,29 +1,8 @@
-# Find the Gurobi C and C++ APIs.
-#
-# Search priority:
-#   1. GUROBI_ROOT CMake cache variable
-#   2. GUROBI_HOME environment variable
-#   3. /opt/gurobi-current
-#   4. Other versioned /opt/gurobi* installations (newest first)
-#
-# Both an installation prefix (for example /opt/gurobi1302) and its platform
-# directory (for example /opt/gurobi1302/linux64) are accepted.
-#
-# Result variables:
-#   Gurobi_FOUND
-#   Gurobi_VERSION
-#   Gurobi_HOME
-#   Gurobi_INCLUDE_DIRS
-#   Gurobi_LIBRARIES
-#   Gurobi_LIBRARY_DIR
-#
-# Imported targets:
-#   Gurobi::C
-#   Gurobi::CXX
+# Author: Feiran
+# Locate the Gurobi C and C++ libraries and expose imported targets.
 
 set(GUROBI_ROOT "" CACHE PATH "Gurobi installation prefix or platform directory")
 
-# A changed SDK root must not reuse libraries cached from another installation.
 unset(Gurobi_CXX_LIBRARY CACHE)
 unset(Gurobi_CXX_LIBRARY)
 unset(Gurobi_C_LIBRARY CACHE)
@@ -75,8 +54,6 @@ if(_Gurobi_platform_root)
     NO_DEFAULT_PATH
   )
 
-  # Gurobi's C API library includes the major/minor ABI in its file name
-  # (for example libgurobi130.so). Discover that name instead of hard-coding it.
   file(
     GLOB _Gurobi_c_library_candidates
     LIST_DIRECTORIES false
@@ -147,8 +124,6 @@ find_package_handle_standard_args(
 
 if(Gurobi_FOUND)
   set(Gurobi_INCLUDE_DIRS "${Gurobi_INCLUDE_DIR}")
-  # Ordering matters for static libgurobi_c++: the C++ wrapper must precede
-  # the versioned Gurobi C/shared library on the final linker command.
   set(Gurobi_LIBRARIES "${Gurobi_CXX_LIBRARY};${Gurobi_C_LIBRARY}")
 
   if(NOT TARGET Gurobi::C)
@@ -161,9 +136,6 @@ if(Gurobi_FOUND)
       Gurobi::C
       PROPERTIES
         IMPORTED_LOCATION "${Gurobi_C_LIBRARY}"
-        # Gurobi's Linux shared library does not publish a DT_SONAME. Ask
-        # CMake to link by -l<name> so the executable records a relocatable
-        # NEEDED entry instead of the discovery machine's absolute path.
         IMPORTED_NO_SONAME TRUE
         INTERFACE_INCLUDE_DIRECTORIES "${Gurobi_INCLUDE_DIR}"
     )

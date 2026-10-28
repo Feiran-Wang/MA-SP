@@ -1,5 +1,7 @@
-# Build and runtime output
-build/
+# Author: Feiran
+# Ignore build products, run output, and local credentials.
+
+/build*/
 output/
 logs/
 solutions/
@@ -10,9 +12,7 @@ sp_candidate_*.txt
 sp_result_*.txt
 sp_result_*_raw.tsv
 sp_post_ls_*.txt
-build-checks/
 
-# Compiler artifacts
 *.o
 *.obj
 *.a
@@ -22,7 +22,6 @@ build-checks/
 *.dll
 *.exe
 
-# Local configuration and credentials
 .env
 .env.*
 *.lic
@@ -32,7 +31,6 @@ gurobi.lic
 *.p12
 *.pfx
 
-# Editor and operating-system files
 .idea/
 .vscode/
 .DS_Store

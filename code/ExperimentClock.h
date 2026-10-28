@@ -1,3 +1,6 @@
+// Author: Feiran
+// Read monotonic time and the optional run deadline.
+
 #ifndef MASP_EXPERIMENT_CLOCK_H
 #define MASP_EXPERIMENT_CLOCK_H
 #include <cstdlib>
@@ -8,7 +11,7 @@ inline double experimentMonotonic() {
     return value.tv_sec + value.tv_nsec / 1e9;
 }
 inline double experimentRemaining() {
-    const char* end = std::getenv("MASP_RUN_DEADLINE");
-    return end ? std::strtod(end, nullptr) - experimentMonotonic() : 1e30;
+    const char *deadline = std::getenv("MASP_RUN_DEADLINE");
+    return deadline ? std::strtod(deadline, nullptr) - experimentMonotonic() : 1e30;
 }
 #endif
